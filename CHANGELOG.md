@@ -1,9 +1,4 @@
-# CHANGELOG
+# Changelog
 
-## 0.1.0
-
-### Added
-
-- Struttura iniziale del progetto
-- Repository Git
-- Configurazione sviluppo
+## 0.1.0A
+- Struttura iniziale del repository.

@@ -1,11 +1,6 @@
 opencv-python
-
 numpy
-
 PyYAML
-
-picamera2
-
-gpiozero
-
 Flask
+gpiozero
+picamera2

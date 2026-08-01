@@ -1,0 +1,13 @@
+[project]
+
+name = "gatekeeper-ai"
+
+version = "0.1.0"
+
+description = "Automatic License Plate Recognition for Raspberry Pi"
+
+authors = [
+    { name="Luca" }
+]
+
+requires-python = ">=3.11"

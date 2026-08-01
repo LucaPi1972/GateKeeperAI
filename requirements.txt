@@ -1,0 +1,11 @@
+opencv-python
+
+numpy
+
+PyYAML
+
+picamera2
+
+gpiozero
+
+Flask

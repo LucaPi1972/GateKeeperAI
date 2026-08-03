@@ -4,6 +4,12 @@
 
 See `VERSION` for the current application version.
 
+## 0.5.0
+
+- Added the first lightweight OpenCV Plate Detector.
+- Added plate crop generation when motion starts.
+- Added SQLite `plates` records for detected plate crops.
+
 ## 0.4.1
 
 - Converted motion detection from frame-based records to event-based `MOTION_START` and `MOTION_END` records.

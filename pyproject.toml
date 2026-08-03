@@ -1,4 +1,7 @@
 [project]
 name="gatekeeper-ai"
-version="0.1.0a0"
+dynamic=["version"]
 requires-python=">=3.11"
+
+[tool.setuptools.dynamic]
+version={file="VERSION"}

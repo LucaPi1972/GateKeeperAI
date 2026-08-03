@@ -1,3 +1,13 @@
 application:
   name: GateKeeper AI
-  version: 0.1.0A
+
+camera:
+  width: 1640
+  height: 1232
+  fps: 1
+
+debug:
+  save_latest: true
+
+logging:
+  level: INFO

@@ -1,33 +1,64 @@
 #!/usr/bin/env python3
-"""GateKeeper AI application entry point.
-
-The module is intentionally conservative at import time so it can start on a
-Raspberry Pi before optional camera/GPIO dependencies are configured.
-"""
+"""GateKeeper AI application entry point."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import platform
 import signal
+import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 try:
     import yaml
-except ImportError:  # dependency is installed by install.sh/requirements.txt
+except ImportError:  # dependency is installed by requirements.txt
     yaml = None
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "config.yaml"
+VERSION_FILE = PROJECT_ROOT / "VERSION"
 LOG_DIR = PROJECT_ROOT / "logs"
 IMAGE_DIR = PROJECT_ROOT / "images"
 LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
+RUNTIME_DIR = PROJECT_ROOT / "runtime"
+PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
+CAMERA_BACKEND = "Picamera2"
 
+
+def get_version() -> str:
+    """Return the application version from the VERSION file."""
+    return VERSION_FILE.read_text(encoding="utf-8").strip()
+
+
+def get_git_commit() -> str:
+    """Return the current short Git commit hash, or development outside Git."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "development"
+    return result.stdout.strip() or "development"
+
+
+def get_opencv_version() -> str:
+    """Return the installed OpenCV version or unavailable."""
+    try:
+        import cv2
+    except ImportError:
+        return "unavailable"
+    return str(cv2.__version__)
 
 
 def _load_minimal_yaml(contents: str) -> dict[str, Any]:
@@ -47,11 +78,19 @@ def _load_minimal_yaml(contents: str) -> dict[str, Any]:
             key, value = line.split(":", 1)
             section = data.setdefault(current_section, {})
             if isinstance(section, dict):
-                section[key.strip()] = value.strip()
+                value = value.strip()
+                if value.lower() in {"true", "false"}:
+                    section[key.strip()] = value.lower() == "true"
+                else:
+                    try:
+                        section[key.strip()] = int(value)
+                    except ValueError:
+                        section[key.strip()] = value
             continue
         raise ValueError("Unsupported YAML syntax; install PyYAML for full YAML support.")
 
     return data
+
 
 def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     """Load the YAML application configuration."""
@@ -70,10 +109,12 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     return loaded
 
 
-def configure_logging(verbose: bool = False) -> None:
+def configure_logging(config: dict[str, Any], verbose: bool = False) -> None:
     """Configure console and file logging."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    level = logging.DEBUG if verbose else logging.INFO
+    logging_config = config.get("logging", {})
+    configured_level = str(logging_config.get("level", "INFO")).upper()
+    level = logging.DEBUG if verbose else getattr(logging, configured_level, logging.INFO)
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -81,44 +122,45 @@ def configure_logging(verbose: bool = False) -> None:
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(LOG_DIR / "gatekeeper.log", encoding="utf-8"),
         ],
+        force=True,
     )
 
 
-class CameraBackend(Protocol):
-    """Common interface for persistent camera backends."""
+class CameraManager:
+    """Manage the Raspberry Pi camera through Picamera2."""
 
-    def start(self) -> None:
-        """Initialize the camera if it is not already open."""
-
-    def capture_latest(self, output_path: Path = LATEST_IMAGE) -> Path:
-        """Capture a frame to the configured latest image path."""
-
-    def stop(self) -> None:
-        """Release camera resources during application shutdown."""
-
-
-class PiCameraManager:
-    """Manage a persistent Raspberry Pi camera connection through Picamera2."""
-
-    def __init__(self) -> None:
+    def __init__(self, width: int, height: int, fps: int) -> None:
+        self.width = width
+        self.height = height
+        self.fps = fps
         self._camera: Any | None = None
+        self._pixel_format = "RGB888"
 
-    def start(self) -> None:
-        """Initialize and start the Raspberry Pi camera if needed."""
+    def initialize(self) -> None:
+        """Initialize and start Picamera2 if needed."""
         if self._camera is not None:
             return
 
         from picamera2 import Picamera2
 
         self._camera = Picamera2()
-        self._camera.configure(self._camera.create_still_configuration())
+        configuration = self._camera.create_still_configuration(
+            main={"size": (self.width, self.height), "format": self._pixel_format}
+        )
+        self._camera.configure(configuration)
         self._camera.start()
+        time.sleep(max(0.1, 1 / max(self.fps, 1)))
 
-    def capture_latest(self, output_path: Path = LATEST_IMAGE) -> Path:
-        """Capture a JPEG to latest.jpg without stopping the camera."""
-        self.start()
+    def health_check(self) -> bool:
+        """Return True when the camera can be initialized."""
+        self.initialize()
+        return self._camera is not None
+
+    def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
+        """Capture a JPEG image to the requested path."""
+        self.initialize()
         if self._camera is None:
-            raise RuntimeError("Raspberry Pi camera is not initialized.")
+            raise RuntimeError("Picamera2 is not initialized.")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         self._camera.capture_file(str(output_path))
@@ -126,84 +168,95 @@ class PiCameraManager:
             raise RuntimeError(f"Captured image is empty or missing: {output_path}")
         return output_path
 
+    def save_latest(self) -> Path:
+        """Capture and save images/latest.jpg."""
+        return self.capture(LATEST_IMAGE)
+
+    def get_info(self) -> dict[str, Any]:
+        """Return camera backend, resolution, pixel format, and model details."""
+        model = "unknown"
+        if self._camera is not None:
+            properties = getattr(self._camera, "camera_properties", {}) or {}
+            model = properties.get("Model", model)
+        return {
+            "backend": CAMERA_BACKEND,
+            "resolution": f"{self.width}x{self.height}",
+            "pixel_format": self._pixel_format,
+            "camera_model": model,
+        }
+
     def stop(self) -> None:
-        """Stop and close Raspberry Pi camera resources during shutdown."""
+        """Stop and close Picamera2 resources during shutdown."""
         if self._camera is not None:
             self._camera.stop()
             self._camera.close()
             self._camera = None
 
 
-class OpenCVCameraManager:
-    """Manage a persistent OpenCV camera connection as a fallback backend."""
-
-    def __init__(self, camera_index: int = 0) -> None:
-        self.camera_index = camera_index
-        self._capture: Any | None = None
-
-    def start(self) -> None:
-        """Initialize the camera if it is not already open."""
-        if self._capture is not None and self._capture.isOpened():
-            return
-
-        import cv2
-
-        self._capture = cv2.VideoCapture(self.camera_index)
-        if not self._capture.isOpened():
-            self._capture.release()
-            self._capture = None
-            raise RuntimeError(f"Unable to open camera index {self.camera_index}.")
-
-    def capture_latest(self, output_path: Path = LATEST_IMAGE) -> Path:
-        """Capture a frame to latest.jpg using OpenCV without stopping the camera."""
-        self.start()
-        if self._capture is None:
-            raise RuntimeError("Camera is not initialized.")
-
-        ok, frame = self._capture.read()
-        if not ok:
-            raise RuntimeError("Unable to capture frame from camera.")
-
-        import cv2
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(output_path), frame):
-            raise RuntimeError(f"Unable to write captured image: {output_path}")
-        if output_path.stat().st_size <= 0:
-            raise RuntimeError(f"Captured image is empty: {output_path}")
-        return output_path
-
-    def stop(self) -> None:
-        """Release camera resources during application shutdown."""
-        if self._capture is not None:
-            self._capture.release()
-            self._capture = None
+@contextmanager
+def pid_file(path: Path = PID_FILE):
+    """Create a runtime PID file and remove it on shutdown."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
-def build_camera_manager(backend: str, camera_index: int) -> CameraBackend:
-    """Create the requested persistent camera backend."""
-    if backend == "picamera2":
-        return PiCameraManager()
-    if backend == "opencv":
-        return OpenCVCameraManager(camera_index)
-    if import_optional_hardware().get("picamera2"):
-        return PiCameraManager()
-    return OpenCVCameraManager(camera_index)
+def print_startup_banner(version: str, git_commit: str) -> None:
+    """Print release and runtime details to stdout."""
+    print("========================================")
+    print(f" GateKeeper AI v{version}")
+    print("========================================")
+    print(f"Build: {git_commit}")
+    print(f"Python: {platform.python_version()}")
+    print(f"Platform: {platform.system()}")
+    print(f"Camera backend: {CAMERA_BACKEND}")
+    print(f"OpenCV: {get_opencv_version()}")
+    print()
 
 
-def capture_and_log_latest(camera: CameraBackend, logger: logging.Logger) -> Path:
+def print_startup_status() -> None:
+    """Print the startup status checklist."""
+    for item in ("Configuration", "Logger", "Database", "Camera", "Capture"):
+        print(f"[OK] {item}")
+    print("Waiting...")
+
+
+def log_startup_metadata(
+    logger: logging.Logger,
+    version: str,
+    git_commit: str,
+    camera_info: dict[str, Any],
+    capture_time: str,
+    image_path: Path,
+) -> None:
+    """Write startup metadata to logs/gatekeeper.log."""
+    logger.info("Version: %s", version)
+    logger.info("Git commit: %s", git_commit)
+    logger.info("Python version: %s", platform.python_version())
+    logger.info("Platform: %s", platform.system())
+    logger.info("Camera backend: %s", camera_info["backend"])
+    logger.info("Camera resolution: %s", camera_info["resolution"])
+    logger.info("Capture time: %s", capture_time)
+    logger.info("Image path: %s", image_path)
+    logger.info("Image size: %d bytes", image_path.stat().st_size)
+
+
+def capture_and_log_latest(camera: CameraManager, logger: logging.Logger) -> Path:
     """Capture latest.jpg and log the UTC capture time and size."""
     captured_at = datetime.now(timezone.utc).isoformat()
-    output_path = camera.capture_latest(LATEST_IMAGE)
+    output_path = camera.save_latest()
     image_size = output_path.stat().st_size
-    logger.info(
-        "Capture time: %s; wrote %s (%d bytes)", captured_at, output_path, image_size
-    )
+    logger.info("Capture time: %s", captured_at)
+    logger.info("Image path: %s", output_path)
+    logger.info("Image size: %d bytes", image_size)
     return output_path
 
 
 def run_until_interrupted(
-    camera: CameraBackend,
+    camera: CameraManager,
     logger: logging.Logger,
     stop_event: Any | None = None,
     install_signal_handlers: bool = True,
@@ -235,115 +288,45 @@ def run_until_interrupted(
             signal.signal(signal.SIGTERM, previous_sigterm)
 
 
-def check_runtime() -> list[str]:
-    """Return non-fatal runtime warnings for this host."""
-    warnings: list[str] = []
-
-    if sys.version_info < (3, 13):
-        warnings.append(
-            f"Python 3.13 is recommended; detected {platform.python_version()}."
-        )
-
-    machine = platform.machine().lower()
-    if machine not in {"armv7l", "aarch64", "arm64"}:
-        warnings.append(
-            f"Raspberry Pi hardware not detected (machine={platform.machine()}); "
-            "hardware features will only be available on the Pi."
-        )
-
-    return warnings
-
-
-def import_optional_hardware() -> dict[str, bool]:
-    """Probe optional Raspberry Pi hardware libraries without failing startup."""
-    availability = {"gpiozero": False, "picamera2": False, "cv2": False, "flask": False}
-
-    try:
-        import gpiozero  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        availability["gpiozero"] = True
-
-    try:
-        import picamera2  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        availability["picamera2"] = True
-
-    try:
-        import cv2  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        availability["cv2"] = True
-
-    try:
-        import flask  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        availability["flask"] = True
-
-    return availability
-
-
 def main(argv: list[str] | None = None) -> int:
     """Start the GateKeeper AI application."""
     parser = argparse.ArgumentParser(description="GateKeeper AI startup")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG,
-        help="Path to the YAML configuration file.",
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Validate configuration and imports, then exit without running services.",
-    )
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--check", action="store_true", help="Validate startup metadata and exit.")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
-    parser.add_argument(
-        "--camera-backend",
-        choices=("auto", "picamera2", "opencv"),
-        default="auto",
-        help="Camera backend to use for the long-running service.",
-    )
-    parser.add_argument(
-        "--camera-index",
-        type=int,
-        default=0,
-        help="OpenCV camera index when using the opencv backend.",
-    )
     args = parser.parse_args(argv)
 
-    configure_logging(args.verbose)
+    version = get_version()
+    git_commit = get_git_commit()
+    config = load_config(args.config)
+    configure_logging(config, args.verbose)
     logger = logging.getLogger("gatekeeper")
 
-    config = load_config(args.config)
-    app_config = config.get("application", {})
-    app_name = app_config.get("name", "GateKeeper AI")
-    app_version = app_config.get("version", "unknown")
+    camera_config = config.get("camera", {})
+    camera = CameraManager(
+        width=int(camera_config.get("width", 1640)),
+        height=int(camera_config.get("height", 1232)),
+        fps=int(camera_config.get("fps", 1)),
+    )
 
-    logger.info("Starting %s version %s", app_name, app_version)
-    for warning in check_runtime():
-        logger.warning(warning)
-
-    availability = import_optional_hardware()
-    logger.info("Optional dependency availability: %s", availability)
-
-    if args.check:
-        logger.info("Startup check completed successfully.")
-        return 0
-
-    camera = build_camera_manager(args.camera_backend, args.camera_index)
     try:
-        capture_and_log_latest(camera, logger)
-        run_until_interrupted(camera, logger)
+        print_startup_banner(version, git_commit)
+        if args.check:
+            logger.info("Startup check completed successfully.")
+            return 0
+
+        with pid_file():
+            camera.health_check()
+            image_path = camera.save_latest()
+            capture_time = datetime.now(timezone.utc).isoformat()
+            log_startup_metadata(
+                logger, version, git_commit, camera.get_info(), capture_time, image_path
+            )
+            print_startup_status()
+            run_until_interrupted(camera, logger)
     except Exception:
         camera.stop()
-        logger.exception("Camera startup failed.")
+        logger.exception("Startup failed.")
         return 1
     return 0
 

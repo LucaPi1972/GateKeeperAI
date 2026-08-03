@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.1
+## 0.5.2
 
-- Add Debug Vision live preview, overlays, annotated frame saves, and headless fallback for plate-detector tuning.
+- Add Display & Calibration local OpenCV preview with overlays, fullscreen control, snapshots, keyboard shortcuts, and automatic headless fallback.
 
 
 ## Current Release

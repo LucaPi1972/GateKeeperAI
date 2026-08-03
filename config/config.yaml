@@ -6,6 +6,17 @@ camera:
   height: 1232
   fps: 1
 
+display:
+  enabled: true
+  fullscreen: false
+  window_name: GateKeeper AI
+  show_fps: true
+  show_motion: true
+  show_plate_box: true
+  show_confidence: true
+  show_timestamp: true
+  save_snapshot_key: s
+
 debug:
   enabled: true
   live_preview: true

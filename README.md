@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.5.1 adds Debug Vision mode for developing and tuning the OpenCV Plate Detector on top of the existing `CameraManager` camera and motion-event pipeline.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.5.2 adds the Display & Calibration subsystem for local OpenCV preview, overlays, snapshots, and keyboard-controlled shutdown.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.5.1
+ GateKeeper AI v0.5.2
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -62,6 +62,17 @@ motion:
   min_area: 1000
   end_delay_seconds: 2
 
+display:
+  enabled: true
+  fullscreen: false
+  window_name: GateKeeper AI
+  show_fps: true
+  show_motion: true
+  show_plate_box: true
+  show_confidence: true
+  show_timestamp: true
+  save_snapshot_key: s
+
 debug:
   enabled: true
   live_preview: true
@@ -96,10 +107,42 @@ Event behavior:
 2. Movement continues: do not save additional images or database rows; update only the event duration tracking and maximum contour area, and log `Motion active`.
 3. Movement stops: after no motion has been detected for `motion.end_delay_seconds`, save one `images/motion_END_<timestamp>.jpg` image, insert one `MOTION_END` SQLite event, and log `Motion finished`, `Duration`, and `Max contour area`.
 
+### Display & Calibration mode
+
+Release 0.5.2 replaces the previous web dashboard proposal with a local OpenCV display subsystem implemented by `DisplayManager`. Configure it in `config/config.yaml`:
+
+```yaml
+display:
+  enabled: true
+  fullscreen: false
+  window_name: GateKeeper AI
+  show_fps: true
+  show_motion: true
+  show_plate_box: true
+  show_confidence: true
+  show_timestamp: true
+  save_snapshot_key: s
+```
+
+When a graphical desktop is available, GateKeeper AI opens one OpenCV window and updates it continuously with the latest camera frame. Display overlays can show current FPS, motion state, timestamp, application version, Git commit, and plate-candidate debugging information. When `PlateDetector` returns a candidate, the display draws a green rectangle plus bounding box coordinates and confidence.
+
+### Headless mode
+
+On Linux hosts without `DISPLAY` or `WAYLAND_DISPLAY`, `DisplayManager` disables itself automatically, logs `No graphical display detected. Running headless.`, and the application continues capturing frames and processing motion normally.
+
+### Keyboard shortcuts
+
+The display window supports these shortcuts:
+
+- `q`: quit the application cleanly
+- `s`: save the current displayed frame to `snapshots/snapshot_<timestamp>.jpg`
+- `f`: toggle fullscreen mode
+- `d`: enable or disable overlays
+
 
 ### Debug Vision mode
 
-Release 0.5.1 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
+Release 0.5.2 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
 
 ```yaml
 debug:
@@ -134,7 +177,7 @@ Annotated frames are saved only when motion starts or when a plate candidate is 
 
 ### Plate Detector
 
-Release 0.5.1 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
+Release 0.5.2 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
 
 The detector is implemented in `src/gatekeeper/plate_detector.py` and uses a lightweight OpenCV pipeline:
 

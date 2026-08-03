@@ -1,4 +1,9 @@
 # Changelog
 
-## 0.1.0A
-- Struttura iniziale del repository.
+## Current Release
+
+See `VERSION` for the current application version.
+
+- Stabilized the core runtime startup path.
+- Added automatic runtime PID file lifecycle management.
+- Added startup capture metadata logging.

@@ -1,4 +1,4 @@
 [project]
 name="gatekeeper-ai"
-version="0.1.0a0"
+version="0.3.0a0"
 requires-python=">=3.11"

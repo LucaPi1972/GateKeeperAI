@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.4.0 adds a stable OpenCV motion detection loop on top of the existing `CameraManager` camera pipeline.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.4.1 adds a stable OpenCV motion detection loop on top of the existing `CameraManager` camera pipeline.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.4.0
+ GateKeeper AI v0.4.1
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -36,11 +36,15 @@ Waiting...
 
 The `runtime/` directory is created automatically while the application is running. It contains `gatekeeper.pid`, which stores the current process ID, and `gatekeeper.db`, the SQLite database used for events. The PID file is removed automatically when the application exits, including when Ctrl+C sends SIGINT.
 
-Motion events are inserted into the `events` table with these fields:
+Motion events are inserted into the `events` table as event boundaries instead of per-frame detections. The Motion Event Manager stores:
 
-- `timestamp`
-- `event_type` (`MOTION` for motion events)
-- `details`
+- `event_id`
+- `start_time`
+- `end_time`
+- `duration`
+- `max_contour_area`
+- `image_start`
+- `image_end`
 
 ## Configuration
 
@@ -54,8 +58,9 @@ camera:
 
 motion:
   enabled: true
-  min_area: 1000
   threshold: 25
+  min_area: 1000
+  end_delay_seconds: 2
 
 debug:
   save_latest: true
@@ -70,32 +75,39 @@ logging:
 - `camera.height`: capture height passed to the existing `CameraManager`.
 - `camera.fps`: continuous frame acquisition rate. The default is `1` frame per second.
 
-### Motion Detection
+### Motion Event Manager
 
-When `motion.enabled` is `true`, each continuously captured frame is processed with OpenCV:
+When `motion.enabled` is `true`, each continuously captured frame is processed by OpenCV and then converted into event-based motion state by `MotionEventManager`.
 
-1. Capture frame.
-2. Convert to grayscale.
-3. Apply Gaussian blur.
-4. Compute absolute difference from the previous frame.
-5. Threshold the difference image using `motion.threshold`.
-6. Dilate the threshold image.
-7. Find contours.
-8. Report motion only when at least one contour area is greater than or equal to `motion.min_area`.
+States:
 
-The first frame seeds the detector and does not emit a motion event because there is no previous frame to compare.
+- `IDLE`
+- `MOTION_STARTED`
+- `MOTION_ACTIVE`
+- `MOTION_FINISHED`
+
+Frame processing still uses grayscale conversion, Gaussian blur, absolute frame difference, thresholding with `motion.threshold`, dilation, contour discovery, and `motion.min_area` to decide whether movement exists. The first frame seeds the detector and does not emit a motion event because there is no previous frame to compare.
+
+Event behavior:
+
+1. Movement starts: save one `images/motion_START_<timestamp>.jpg` image, insert one `MOTION_START` SQLite event, and log `Motion started`.
+2. Movement continues: do not save additional images or database rows; update only the event duration tracking and maximum contour area, and log `Motion active`.
+3. Movement stops: after no motion has been detected for `motion.end_delay_seconds`, save one `images/motion_END_<timestamp>.jpg` image, insert one `MOTION_END` SQLite event, and log `Motion finished`, `Duration`, and `Max contour area`.
+
 
 ## Capture output and logs
 
 The application captures `images/latest.jpg` once during startup. The continuous motion loop does not overwrite `latest.jpg`.
 
-When motion is detected, the application logs `Motion detected` with the UTC timestamp, contour area, and image path. It also saves a motion image as:
+Motion event images are saved only at event boundaries:
 
 ```text
-images/motion_<timestamp>.jpg
+images/motion_START_<timestamp>.jpg
+images/motion_END_<timestamp>.jpg
 ```
 
 Startup metadata and capture details are written to `logs/gatekeeper.log`, including version, Git commit, Python version, platform, camera backend, camera resolution, capture time, image path, and image size.
+
 
 ## Shutdown
 

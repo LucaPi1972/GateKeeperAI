@@ -11,3 +11,8 @@ debug:
 
 logging:
   level: INFO
+
+motion:
+  enabled: true
+  min_area: 1000
+  threshold: 25

@@ -7,7 +7,9 @@ camera:
   fps: 1
 
 debug:
-  save_latest: true
+  enabled: true
+  live_preview: true
+  save_annotated_frames: true
 
 logging:
   level: INFO

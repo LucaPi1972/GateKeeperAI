@@ -30,6 +30,7 @@ DEFAULT_CONFIG = PROJECT_ROOT / "config" / "config.yaml"
 VERSION_FILE = PROJECT_ROOT / "VERSION"
 LOG_DIR = PROJECT_ROOT / "logs"
 IMAGE_DIR = PROJECT_ROOT / "images"
+DEBUG_DIR = PROJECT_ROOT / "debug"
 LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
@@ -458,6 +459,143 @@ def plate_image_path(timestamp: str) -> Path:
     return IMAGE_DIR / f"plate_{safe_timestamp}.jpg"
 
 
+def is_display_available() -> bool:
+    """Return whether an OpenCV preview window can be shown."""
+    if platform.system() in {"Windows", "Darwin"}:
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def debug_frame_path(timestamp: str) -> Path:
+    """Build a filesystem-safe annotated debug frame path."""
+    safe_timestamp = timestamp.replace(":", "").replace("+", "Z")
+    return DEBUG_DIR / f"frame_{safe_timestamp}.jpg"
+
+
+class DebugVision:
+    """Render and optionally save annotated frames for detector tuning."""
+
+    WINDOW_NAME = "GateKeeper AI Debug Vision"
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        live_preview: bool = False,
+        save_annotated_frames: bool = False,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.live_preview = live_preview and is_display_available()
+        self.save_annotated_frames = save_annotated_frames
+        self.logger = logger or logging.getLogger(__name__)
+        self.overlays_enabled = True
+        self.quit_requested = False
+        if enabled and live_preview and not self.live_preview:
+            self.logger.info("DISPLAY unavailable; Debug Vision preview disabled.")
+
+    def annotate(
+        self,
+        frame: Any,
+        *,
+        motion_state: str,
+        fps: float,
+        camera_resolution: str,
+        timestamp: datetime,
+        plate_detection: PlateDetection | None = None,
+    ) -> Any:
+        """Return a copy of ``frame`` with Debug Vision overlays."""
+        import cv2
+
+        annotated = frame.copy() if hasattr(frame, "copy") else frame
+        if not self.enabled or not self.overlays_enabled:
+            return annotated
+
+        text_color = (0, 255, 0)
+        line_height = 24
+        lines = (
+            f"Motion: {motion_state}",
+            f"FPS: {fps:.2f}",
+            f"Resolution: {camera_resolution}",
+            f"Timestamp: {timestamp.isoformat()}",
+        )
+        for index, line in enumerate(lines):
+            cv2.putText(
+                annotated,
+                line,
+                (10, 25 + (index * line_height)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                text_color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        if plate_detection is not None:
+            x, y, width, height = plate_detection.bounding_box
+            cv2.rectangle(annotated, (x, y), (x + width, y + height), (0, 0, 255), 2)
+            label = (
+                f"Plate {plate_detection.confidence:.3f} " f"({x},{y},{width},{height})"
+            )
+            cv2.putText(
+                annotated,
+                label,
+                (x, max(20, y - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        return annotated
+
+    def save_frame(
+        self, annotated_frame: Any, timestamp: datetime | None = None
+    ) -> Path:
+        """Save one annotated frame into the debug directory."""
+        import cv2
+
+        timestamp = timestamp or datetime.now(timezone.utc)
+        output_path = debug_frame_path(timestamp.isoformat())
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        image = (
+            cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
+            if len(annotated_frame.shape) == 3
+            else annotated_frame
+        )
+        if not cv2.imwrite(str(output_path), image):
+            raise RuntimeError(f"Unable to save debug frame: {output_path}")
+        self.logger.info("Debug frame saved: %s", output_path)
+        return output_path
+
+    def show(self, annotated_frame: Any) -> None:
+        """Display a frame and process Debug Vision keyboard shortcuts."""
+        if not self.enabled or not self.live_preview:
+            return
+        import cv2
+
+        image = (
+            cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
+            if len(annotated_frame.shape) == 3
+            else annotated_frame
+        )
+        cv2.imshow(self.WINDOW_NAME, image)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            self.quit_requested = True
+        elif key == ord("s"):
+            self.save_frame(annotated_frame)
+        elif key == ord("d"):
+            self.overlays_enabled = not self.overlays_enabled
+
+    def close(self) -> None:
+        """Close Debug Vision preview resources."""
+        if self.live_preview:
+            import cv2
+
+            cv2.destroyWindow(self.WINDOW_NAME)
+
+
 class MotionEventManager:
     """Convert frame-level detections into start/end motion events."""
 
@@ -473,12 +611,15 @@ class MotionEventManager:
         logger: logging.Logger,
         end_delay_seconds: float = 2,
         plate_detector: PlateDetector | None = None,
+        debug_vision: DebugVision | None = None,
     ) -> None:
         self.detector = detector
         self.database = database
         self.logger = logger
         self.end_delay_seconds = end_delay_seconds
         self.plate_detector = plate_detector
+        self.debug_vision = debug_vision
+        self.last_plate_detection: PlateDetection | None = None
         self.state = self.IDLE
         self.event_id: str | None = None
         self.start_time: datetime | None = None
@@ -516,6 +657,20 @@ class MotionEventManager:
         )
         self.logger.info("Motion started")
         self._detect_plate(frame, now)
+        if self.debug_vision is not None and self.debug_vision.save_annotated_frames:
+            annotated = self.debug_vision.annotate(
+                frame,
+                motion_state=self.state,
+                fps=0.0,
+                camera_resolution=(
+                    f"{frame.shape[1]}x{frame.shape[0]}"
+                    if hasattr(frame, "shape")
+                    else "unknown"
+                ),
+                timestamp=now,
+                plate_detection=self.last_plate_detection,
+            )
+            self.debug_vision.save_frame(annotated, now)
         if self.database is not None:
             self.database.insert_event(
                 now.isoformat(),
@@ -531,6 +686,7 @@ class MotionEventManager:
         if self.plate_detector is None or self.event_id is None:
             return
         detection = self.plate_detector.detect(frame)
+        self.last_plate_detection = detection
         if detection is None:
             return
         crop_path = self._save_plate_crop(
@@ -540,6 +696,20 @@ class MotionEventManager:
         self.logger.info("Confidence: %.3f", detection.confidence)
         self.logger.info("Bounding box: %s", detection.bounding_box)
         self.logger.info("Crop path: %s", crop_path)
+        if self.debug_vision is not None and self.debug_vision.save_annotated_frames:
+            annotated = self.debug_vision.annotate(
+                frame,
+                motion_state=self.state,
+                fps=0.0,
+                camera_resolution=(
+                    f"{frame.shape[1]}x{frame.shape[0]}"
+                    if hasattr(frame, "shape")
+                    else "unknown"
+                ),
+                timestamp=now,
+                plate_detection=detection,
+            )
+            self.debug_vision.save_frame(annotated, now)
         if self.database is not None:
             self.database.insert_plate(
                 self.event_id,
@@ -554,9 +724,7 @@ class MotionEventManager:
         import cv2
 
         crop = (
-            self.plate_detector.crop(frame, detection)
-            if self.plate_detector
-            else frame
+            self.plate_detector.crop(frame, detection) if self.plate_detector else frame
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         image = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR) if len(crop.shape) == 3 else crop
@@ -610,6 +778,7 @@ def run_until_interrupted(
     motion_event_manager: MotionEventManager | None = None,
     end_delay_seconds: float = 2,
     plate_detector: PlateDetector | None = None,
+    debug_vision: DebugVision | None = None,
 ) -> None:
     """Capture frames continuously until shutdown, detecting motion when enabled."""
     running = True
@@ -629,8 +798,15 @@ def run_until_interrupted(
     interval = 1 / max(fps, 1)
     motion_detector = motion_detector or MotionDetector()
     motion_event_manager = motion_event_manager or MotionEventManager(
-        motion_detector, database, logger, end_delay_seconds, plate_detector
+        motion_detector,
+        database,
+        logger,
+        end_delay_seconds,
+        plate_detector,
+        debug_vision,
     )
+    camera_resolution = camera.get_info().get("resolution", "unknown")
+    last_frame_started = time.monotonic()
     try:
         logger.info("Application remains running; press Ctrl+C to stop.")
         while running and (stop_event is None or not stop_event.is_set()):
@@ -638,10 +814,31 @@ def run_until_interrupted(
             frame = camera.capture_frame()
             if motion_enabled:
                 motion_event_manager.process_frame(frame)
+            if debug_vision is not None and debug_vision.enabled:
+                now = datetime.now(timezone.utc)
+                frame_interval = max(loop_started - last_frame_started, 0.000001)
+                measured_fps = 1 / frame_interval
+                annotated = debug_vision.annotate(
+                    frame,
+                    motion_state=motion_event_manager.state,
+                    fps=measured_fps,
+                    camera_resolution=camera_resolution,
+                    timestamp=now,
+                    plate_detection=motion_event_manager.last_plate_detection,
+                )
+                debug_vision.show(annotated)
+                if debug_vision.quit_requested:
+                    logger.info("Debug Vision quit requested; shutting down cleanly.")
+                    running = False
+                    if stop_event is not None:
+                        stop_event.set()
+            last_frame_started = loop_started
             elapsed = time.monotonic() - loop_started
             time.sleep(max(0, interval - elapsed))
     finally:
         camera.stop()
+        if debug_vision is not None:
+            debug_vision.close()
         if database is not None:
             database.close()
             logger.info("Database closed cleanly.")
@@ -682,6 +879,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     end_delay_seconds = float(motion_config.get("end_delay_seconds", 2))
     plate_detector = PlateDetector()
+    debug_config = config.get("debug", {})
+    debug_vision = DebugVision(
+        enabled=bool(debug_config.get("enabled", False)),
+        live_preview=bool(debug_config.get("live_preview", False)),
+        save_annotated_frames=bool(debug_config.get("save_annotated_frames", False)),
+        logger=logger,
+    )
 
     try:
         print_startup_banner(version, git_commit)
@@ -708,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                 database=database,
                 end_delay_seconds=end_delay_seconds,
                 plate_detector=plate_detector,
+                debug_vision=debug_vision,
             )
     except Exception:
         camera.stop()

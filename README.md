@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.5.0 adds the first lightweight OpenCV Plate Detector on top of the existing `CameraManager` camera and motion-event pipeline.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.5.1 adds Debug Vision mode for developing and tuning the OpenCV Plate Detector on top of the existing `CameraManager` camera and motion-event pipeline.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.5.0
+ GateKeeper AI v0.5.1
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -63,7 +63,9 @@ motion:
   end_delay_seconds: 2
 
 debug:
-  save_latest: true
+  enabled: true
+  live_preview: true
+  save_annotated_frames: true
 
 logging:
   level: INFO
@@ -94,9 +96,45 @@ Event behavior:
 2. Movement continues: do not save additional images or database rows; update only the event duration tracking and maximum contour area, and log `Motion active`.
 3. Movement stops: after no motion has been detected for `motion.end_delay_seconds`, save one `images/motion_END_<timestamp>.jpg` image, insert one `MOTION_END` SQLite event, and log `Motion finished`, `Duration`, and `Max contour area`.
 
+
+### Debug Vision mode
+
+Release 0.5.1 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
+
+```yaml
+debug:
+  enabled: true
+  live_preview: true
+  save_annotated_frames: true
+```
+
+When `debug.live_preview` is enabled and a display is available, GateKeeper AI opens an OpenCV preview window for the current frame. If the host is headless and neither `DISPLAY` nor `WAYLAND_DISPLAY` is available on Linux, preview is disabled automatically and the application continues running normally.
+
+Debug overlays include:
+
+- Motion state
+- FPS
+- Camera resolution
+- Timestamp
+- Plate candidate bounding box, confidence, and coordinates when the Plate Detector returns a candidate
+
+Keyboard shortcuts in the preview window:
+
+- `q`: quit the application cleanly
+- `s`: save the current annotated frame
+- `d`: enable or disable overlays
+
+When `debug.save_annotated_frames` is enabled, annotated frames are written under:
+
+```text
+debug/frame_<timestamp>.jpg
+```
+
+Annotated frames are saved only when motion starts or when a plate candidate is detected.
+
 ### Plate Detector
 
-Release 0.5.0 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
+Release 0.5.1 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
 
 The detector is implemented in `src/gatekeeper/plate_detector.py` and uses a lightweight OpenCV pipeline:
 

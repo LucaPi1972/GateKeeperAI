@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.5.0"
+    assert main.get_version() == "0.5.1"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.5.0" in output
+    assert "GateKeeper AI v0.5.1" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -357,3 +357,97 @@ def test_run_until_interrupted_captures_frames_detects_motion_and_stops_cleanly(
     assert rows[1][2] == 1500.0
     assert rows[0][3] is not None
     assert rows[1][4] is not None
+
+
+def test_default_config_contains_debug_vision_settings():
+    config = main.load_config()
+
+    assert config["debug"] == {
+        "enabled": True,
+        "live_preview": True,
+        "save_annotated_frames": True,
+    }
+
+
+def test_debug_vision_disables_preview_when_headless(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(main.platform, "system", lambda: "Linux")
+
+    debug_vision = main.DebugVision(enabled=True, live_preview=True)
+
+    assert debug_vision.enabled is True
+    assert debug_vision.live_preview is False
+
+
+def test_debug_vision_preview_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(main.platform, "system", lambda: "Linux")
+
+    debug_vision = main.DebugVision(enabled=True, live_preview=True)
+
+    assert debug_vision.live_preview is True
+
+
+def test_debug_vision_saves_annotated_frame_and_draws_bounding_box(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((80, 160, 3), dtype=np.uint8)
+    detection = main.PlateDetection((20, 30, 70, 20), 0.9, object())
+    debug_vision = main.DebugVision(enabled=True, save_annotated_frames=True)
+
+    original_debug_dir = main.DEBUG_DIR
+    main.DEBUG_DIR = tmp_path / "debug"
+    try:
+        annotated = debug_vision.annotate(
+            frame,
+            motion_state=main.MotionEventManager.MOTION_STARTED,
+            fps=12.5,
+            camera_resolution="160x80",
+            timestamp=main.datetime(2026, 8, 3, tzinfo=main.timezone.utc),
+            plate_detection=detection,
+        )
+        output_path = debug_vision.save_frame(
+            annotated, main.datetime(2026, 8, 3, tzinfo=main.timezone.utc)
+        )
+    finally:
+        main.DEBUG_DIR = original_debug_dir
+
+    assert output_path.is_file()
+    assert output_path.name.startswith("frame_")
+    assert output_path.suffix == ".jpg"
+    assert annotated[30, 20].any()
+    saved = cv2.imread(str(output_path))
+    assert saved is not None
+
+
+def test_debug_vision_q_key_stops_run_cleanly(monkeypatch, tmp_path, caplog):
+    np = pytest.importorskip("numpy")
+    camera = FakeCamera(frames=[np.zeros((20, 20, 3), dtype=np.uint8)])
+    logger = logging.getLogger("test-gatekeeper")
+    stop_event = threading.Event()
+    debug_vision = main.DebugVision(enabled=True, live_preview=True, logger=logger)
+    debug_vision.live_preview = True
+    monkeypatch.setattr(
+        main.cv2 if hasattr(main, "cv2") else __import__("cv2"),
+        "imshow",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(__import__("cv2"), "waitKey", lambda delay: ord("q"))
+    monkeypatch.setattr(__import__("cv2"), "destroyWindow", lambda name: None)
+
+    with caplog.at_level(logging.INFO, logger="test-gatekeeper"):
+        main.run_until_interrupted(
+            camera,
+            logger,
+            stop_event,
+            False,
+            fps=20,
+            motion_enabled=False,
+            database=main.EventDatabase(tmp_path / "gatekeeper.db"),
+            debug_vision=debug_vision,
+        )
+
+    assert camera.stopped
+    assert "Debug Vision quit requested" in caplog.text
+    assert "Camera shut down cleanly" in caplog.text

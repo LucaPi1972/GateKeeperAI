@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Add Debug Vision live preview, overlays, annotated frame saves, and headless fallback for plate-detector tuning.
+
+
 ## Current Release
 
 See `VERSION` for the current application version.

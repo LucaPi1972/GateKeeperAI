@@ -22,6 +22,8 @@ except ImportError:  # dependency is installed by install.sh/requirements.txt
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "config.yaml"
 LOG_DIR = PROJECT_ROOT / "logs"
+IMAGE_DIR = PROJECT_ROOT / "images"
+LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
 
 
 
@@ -77,6 +79,50 @@ def configure_logging(verbose: bool = False) -> None:
             logging.FileHandler(LOG_DIR / "gatekeeper.log", encoding="utf-8"),
         ],
     )
+
+
+class CameraManager:
+    """Manage a persistent OpenCV camera connection."""
+
+    def __init__(self, camera_index: int = 0) -> None:
+        self.camera_index = camera_index
+        self._capture: Any | None = None
+
+    def start(self) -> None:
+        """Initialize the camera if it is not already open."""
+        if self._capture is not None and self._capture.isOpened():
+            return
+
+        import cv2
+
+        self._capture = cv2.VideoCapture(self.camera_index)
+        if not self._capture.isOpened():
+            self._capture.release()
+            self._capture = None
+            raise RuntimeError(f"Unable to open camera index {self.camera_index}.")
+
+    def capture_latest(self, output_path: Path = LATEST_IMAGE) -> Path:
+        """Capture a frame to latest.jpg using OpenCV without stopping the camera."""
+        self.start()
+        if self._capture is None:
+            raise RuntimeError("Camera is not initialized.")
+
+        ok, frame = self._capture.read()
+        if not ok:
+            raise RuntimeError("Unable to capture frame from camera.")
+
+        import cv2
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(output_path), frame):
+            raise RuntimeError(f"Unable to write captured image: {output_path}")
+        return output_path
+
+    def stop(self) -> None:
+        """Release camera resources during application shutdown."""
+        if self._capture is not None:
+            self._capture.release()
+            self._capture = None
 
 
 def check_runtime() -> list[str]:

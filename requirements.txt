@@ -1,6 +1,12 @@
-opencv-python
-numpy
-PyYAML
-Flask
-gpiozero
-picamera2
+# GateKeeper AI has no mandatory third-party Python packages for startup.
+#
+# Optional Raspberry Pi integrations are imported only when available:
+# - PyYAML (full YAML configuration parsing; main.py includes a minimal fallback)
+# - gpiozero (GPIO hardware)
+# - picamera2 (Raspberry Pi camera stack)
+# - opencv-python or python3-opencv (computer vision)
+# - Flask (web UI/API)
+#
+# Raspberry Pi 3B deployments, especially 32-bit Python 3.13 environments, often
+# need OS-provided camera/GPIO/OpenCV packages rather than pip wheels. Keeping
+# startup dependencies optional prevents install-time failures on those systems.

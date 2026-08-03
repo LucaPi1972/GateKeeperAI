@@ -59,6 +59,24 @@ class FakeCamera:
         self.stopped = True
 
 
+class FakePlateDetector:
+    def __init__(self, detection=None) -> None:
+        self.detection = detection
+        self.calls = 0
+        self.crops = 0
+
+    def initialize(self) -> None:
+        return None
+
+    def detect(self, frame):
+        self.calls += 1
+        return self.detection
+
+    def crop(self, frame, detection):
+        self.crops += 1
+        return frame
+
+
 class FakeMotionDetector:
     def __init__(self, detections: list[tuple[bool, float]] | None = None) -> None:
         self.calls = 0
@@ -78,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.4.1"
+    assert main.get_version() == "0.5.0"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -88,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.4.1" in output
+    assert "GateKeeper AI v0.5.0" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -185,6 +203,95 @@ def test_event_database_inserts_motion_event_metadata(tmp_path):
         "images/motion_START_2026.jpg",
         "images/motion_END_2026.jpg",
     )
+
+
+def test_event_database_inserts_plate_record(tmp_path):
+    database = main.EventDatabase(tmp_path / "gatekeeper.db")
+    database.initialize()
+    database.insert_plate(
+        "event-1",
+        "images/plate_2026.jpg",
+        0.75,
+        "2026-08-03T00:00:01+00:00",
+    )
+    database.close()
+
+    with sqlite3.connect(tmp_path / "gatekeeper.db") as connection:
+        row = connection.execute(
+            "SELECT event_id, image_path, confidence, created_at FROM plates"
+        ).fetchone()
+
+    assert row == (
+        "event-1",
+        "images/plate_2026.jpg",
+        0.75,
+        "2026-08-03T00:00:01+00:00",
+    )
+
+
+def test_plate_detector_detects_and_crops_quadrilateral_candidate():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    detector = main.PlateDetector(min_area=100)
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    cv2.rectangle(frame, (40, 45), (190, 75), (255, 255, 255), 2)
+
+    detection = detector.detect(frame)
+
+    assert detection is not None
+    assert detection.confidence > 0
+    x, y, width, height = detection.bounding_box
+    assert width / height >= 2
+    crop = detector.crop(frame, detection)
+    assert crop.shape[0] == height
+    assert crop.shape[1] == width
+
+
+def test_motion_start_runs_plate_detector_saves_crop_and_records_database(
+    tmp_path, caplog
+):
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((20, 60, 3), dtype=np.uint8)
+    detector = FakeMotionDetector([(True, 1234.0)])
+    detection = main.PlateDetection((5, 5, 30, 10), 0.8, object())
+    plate_detector = FakePlateDetector(detection)
+    database = main.EventDatabase(tmp_path / "gatekeeper.db")
+    database.initialize()
+    logger = logging.getLogger("test-gatekeeper")
+
+    original_image_dir = main.IMAGE_DIR
+    main.IMAGE_DIR = tmp_path / "images"
+    manager = main.MotionEventManager(
+        detector,
+        database,
+        logger,
+        end_delay_seconds=0.05,
+        plate_detector=plate_detector,
+    )
+    try:
+        with caplog.at_level(logging.INFO, logger="test-gatekeeper"):
+            manager.process_frame(frame)
+    finally:
+        main.IMAGE_DIR = original_image_dir
+        database.close()
+
+    assert plate_detector.calls == 1
+    assert plate_detector.crops == 1
+    assert "Plate detected" in caplog.text
+    assert "Confidence: 0.800" in caplog.text
+    assert "Bounding box: (5, 5, 30, 10)" in caplog.text
+    assert "Crop path:" in caplog.text
+
+    with sqlite3.connect(tmp_path / "gatekeeper.db") as connection:
+        row = connection.execute(
+            "SELECT event_id, image_path, confidence FROM plates"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0]
+    assert Path(row[1]).is_file()
+    assert Path(row[1]).name.startswith("plate_")
+    assert row[2] == 0.8
 
 
 def test_run_until_interrupted_captures_frames_detects_motion_and_stops_cleanly(

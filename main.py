@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.gatekeeper.plate_detector import PlateDetection, PlateDetector
+
 try:
     import yaml
 except ImportError:  # dependency is installed by requirements.txt
@@ -233,6 +235,15 @@ class EventDatabase:
                 image_end TEXT
             )
             """)
+        self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS plates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                image_path TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """)
         self._ensure_event_columns()
         self.connection.commit()
 
@@ -294,6 +305,25 @@ class EventDatabase:
                 image_start,
                 image_end,
             ),
+        )
+        self.connection.commit()
+
+    def insert_plate(
+        self,
+        event_id: str,
+        image_path: str,
+        confidence: float,
+        created_at: str,
+    ) -> None:
+        """Insert one detected plate crop record."""
+        if self.connection is None:
+            raise RuntimeError("Database is not initialized.")
+        self.connection.execute(
+            """
+            INSERT INTO plates (event_id, image_path, confidence, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (event_id, image_path, confidence, created_at),
         )
         self.connection.commit()
 
@@ -422,6 +452,12 @@ def motion_image_path(timestamp: str, marker: str) -> Path:
     return IMAGE_DIR / f"motion_{marker}_{safe_timestamp}.jpg"
 
 
+def plate_image_path(timestamp: str) -> Path:
+    """Build a unique filesystem-safe plate crop path from an ISO timestamp."""
+    safe_timestamp = timestamp.replace(":", "").replace("+", "Z")
+    return IMAGE_DIR / f"plate_{safe_timestamp}.jpg"
+
+
 class MotionEventManager:
     """Convert frame-level detections into start/end motion events."""
 
@@ -436,11 +472,13 @@ class MotionEventManager:
         database: EventDatabase | None,
         logger: logging.Logger,
         end_delay_seconds: float = 2,
+        plate_detector: PlateDetector | None = None,
     ) -> None:
         self.detector = detector
         self.database = database
         self.logger = logger
         self.end_delay_seconds = end_delay_seconds
+        self.plate_detector = plate_detector
         self.state = self.IDLE
         self.event_id: str | None = None
         self.start_time: datetime | None = None
@@ -477,6 +515,7 @@ class MotionEventManager:
             frame, motion_image_path(now.isoformat(), "START")
         )
         self.logger.info("Motion started")
+        self._detect_plate(frame, now)
         if self.database is not None:
             self.database.insert_event(
                 now.isoformat(),
@@ -487,6 +526,43 @@ class MotionEventManager:
                 max_contour_area=self.max_contour_area,
                 image_start=str(self.image_start),
             )
+
+    def _detect_plate(self, frame: Any, now: datetime) -> None:
+        if self.plate_detector is None or self.event_id is None:
+            return
+        detection = self.plate_detector.detect(frame)
+        if detection is None:
+            return
+        crop_path = self._save_plate_crop(
+            frame, detection, plate_image_path(now.isoformat())
+        )
+        self.logger.info("Plate detected")
+        self.logger.info("Confidence: %.3f", detection.confidence)
+        self.logger.info("Bounding box: %s", detection.bounding_box)
+        self.logger.info("Crop path: %s", crop_path)
+        if self.database is not None:
+            self.database.insert_plate(
+                self.event_id,
+                str(crop_path),
+                detection.confidence,
+                now.isoformat(),
+            )
+
+    def _save_plate_crop(
+        self, frame: Any, detection: PlateDetection, output_path: Path
+    ) -> Path:
+        import cv2
+
+        crop = (
+            self.plate_detector.crop(frame, detection)
+            if self.plate_detector
+            else frame
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        image = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR) if len(crop.shape) == 3 else crop
+        if not cv2.imwrite(str(output_path), image):
+            raise RuntimeError(f"Unable to save plate crop: {output_path}")
+        return output_path
 
     def _finish(self, frame: Any, now: datetime) -> None:
         self.state = self.MOTION_FINISHED
@@ -533,6 +609,7 @@ def run_until_interrupted(
     database: EventDatabase | None = None,
     motion_event_manager: MotionEventManager | None = None,
     end_delay_seconds: float = 2,
+    plate_detector: PlateDetector | None = None,
 ) -> None:
     """Capture frames continuously until shutdown, detecting motion when enabled."""
     running = True
@@ -552,7 +629,7 @@ def run_until_interrupted(
     interval = 1 / max(fps, 1)
     motion_detector = motion_detector or MotionDetector()
     motion_event_manager = motion_event_manager or MotionEventManager(
-        motion_detector, database, logger, end_delay_seconds
+        motion_detector, database, logger, end_delay_seconds, plate_detector
     )
     try:
         logger.info("Application remains running; press Ctrl+C to stop.")
@@ -604,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
         threshold=int(motion_config.get("threshold", 25)),
     )
     end_delay_seconds = float(motion_config.get("end_delay_seconds", 2))
+    plate_detector = PlateDetector()
 
     try:
         print_startup_banner(version, git_commit)
@@ -613,6 +691,7 @@ def main(argv: list[str] | None = None) -> int:
 
         with pid_file():
             database.initialize()
+            plate_detector.initialize()
             camera.health_check()
             image_path = camera.save_latest()
             capture_time = datetime.now(timezone.utc).isoformat()
@@ -628,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                 motion_detector=motion_detector,
                 database=database,
                 end_delay_seconds=end_delay_seconds,
+                plate_detector=plate_detector,
             )
     except Exception:
         camera.stop()

@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.4.1 adds a stable OpenCV motion detection loop on top of the existing `CameraManager` camera pipeline.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture and full-frame motion detection. Release 0.5.0 adds the first lightweight OpenCV Plate Detector on top of the existing `CameraManager` camera and motion-event pipeline.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.4.1
+ GateKeeper AI v0.5.0
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -93,6 +93,31 @@ Event behavior:
 1. Movement starts: save one `images/motion_START_<timestamp>.jpg` image, insert one `MOTION_START` SQLite event, and log `Motion started`.
 2. Movement continues: do not save additional images or database rows; update only the event duration tracking and maximum contour area, and log `Motion active`.
 3. Movement stops: after no motion has been detected for `motion.end_delay_seconds`, save one `images/motion_END_<timestamp>.jpg` image, insert one `MOTION_END` SQLite event, and log `Motion finished`, `Duration`, and `Max contour area`.
+
+### Plate Detector
+
+Release 0.5.0 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
+
+The detector is implemented in `src/gatekeeper/plate_detector.py` and uses a lightweight OpenCV pipeline:
+
+1. Convert the frame to grayscale.
+2. Apply a bilateral filter.
+3. Run Canny edge detection.
+4. Find contours.
+5. Approximate contour polygons.
+6. Keep quadrilateral candidates.
+7. Filter candidates by license-plate-like aspect ratio.
+8. Return the best candidate with a confidence score and bounding box.
+
+When a plate candidate is found, GateKeeper AI saves a non-overwriting crop at:
+
+```text
+images/plate_<timestamp>.jpg
+```
+
+Each crop creates one row in the SQLite `plates` table with `event_id`, `image_path`, `confidence`, and `created_at`. Logs include `Plate detected`, confidence, bounding box, and crop path.
+
+OCR, whitelist matching, GPIO, and dashboard features are intentionally not part of this release.
 
 
 ## Capture output and logs

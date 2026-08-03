@@ -14,5 +14,6 @@ logging:
 
 motion:
   enabled: true
-  min_area: 1000
   threshold: 25
+  min_area: 1000
+  end_delay_seconds: 2

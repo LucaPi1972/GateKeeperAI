@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.5.1"
+    assert main.get_version() == "0.5.2"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.5.1" in output
+    assert "GateKeeper AI v0.5.2" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -451,3 +451,94 @@ def test_debug_vision_q_key_stops_run_cleanly(monkeypatch, tmp_path, caplog):
     assert camera.stopped
     assert "Debug Vision quit requested" in caplog.text
     assert "Camera shut down cleanly" in caplog.text
+
+
+def test_default_config_contains_display_settings():
+    config = main.load_config()
+
+    assert config["display"] == {
+        "enabled": True,
+        "fullscreen": False,
+        "window_name": "GateKeeper AI",
+        "show_fps": True,
+        "show_motion": True,
+        "show_plate_box": True,
+        "show_confidence": True,
+        "show_timestamp": True,
+        "save_snapshot_key": "s",
+    }
+
+
+def test_display_manager_disables_when_headless(monkeypatch, caplog):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(main.platform, "system", lambda: "Linux")
+    monkeypatch.setattr("src.gatekeeper.display_manager.platform.system", lambda: "Linux")
+    logger = logging.getLogger("test-gatekeeper")
+
+    with caplog.at_level(logging.INFO, logger="test-gatekeeper"):
+        display = main.DisplayManager(enabled=True, logger=logger)
+
+    assert display.requested_enabled is True
+    assert display.enabled is False
+    assert "No graphical display detected. Running headless." in caplog.text
+
+
+def test_display_manager_draws_green_plate_overlay_and_snapshot(tmp_path, monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((90, 180, 3), dtype=np.uint8)
+    detection = main.PlateDetection((25, 35, 80, 20), 0.85, object())
+    display = main.DisplayManager(enabled=False, version="0.5.2", git_commit="abc123")
+    monkeypatch.setattr("src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots")
+
+    annotated = display.draw_overlays(
+        frame,
+        motion_state=main.MotionEventManager.MOTION_STARTED,
+        fps=10.0,
+        timestamp=main.datetime(2026, 8, 3, tzinfo=main.timezone.utc),
+        plate_detection=detection,
+    )
+    output_path = display.save_snapshot(
+        annotated, main.datetime(2026, 8, 3, tzinfo=main.timezone.utc)
+    )
+
+    assert annotated[35, 25, 1] > 0
+    assert output_path.is_file()
+    assert output_path.name.startswith("snapshot_")
+    assert output_path.suffix == ".jpg"
+    assert cv2.imread(str(output_path)) is not None
+
+
+def test_display_manager_keyboard_shortcuts(monkeypatch, tmp_path):
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    display = main.DisplayManager(enabled=False)
+    monkeypatch.setattr("src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots")
+
+    display.handle_key(ord("d"), frame)
+    assert display.overlays_enabled is False
+    display.handle_key(ord("f"), frame)
+    assert display.fullscreen is True
+    display.handle_key(ord("s"), frame)
+    assert list((tmp_path / "snapshots").glob("snapshot_*.jpg"))
+    display.handle_key(ord("q"), frame)
+    assert display.quit_requested is True
+
+
+def test_display_manager_window_creation_and_close(monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr("src.gatekeeper.display_manager.platform.system", lambda: "Linux")
+    cv2 = pytest.importorskip("cv2")
+    calls = []
+    monkeypatch.setattr(cv2, "namedWindow", lambda *args: calls.append(("named", args)))
+    monkeypatch.setattr(cv2, "setWindowProperty", lambda *args: calls.append(("prop", args)))
+    monkeypatch.setattr(cv2, "destroyWindow", lambda *args: calls.append(("destroy", args)))
+
+    display = main.DisplayManager(enabled=True, fullscreen=True, window_name="Test")
+    display.create_window()
+    display.close()
+
+    assert calls[0][0] == "named"
+    assert any(call[0] == "prop" for call in calls)
+    assert calls[-1][0] == "destroy"

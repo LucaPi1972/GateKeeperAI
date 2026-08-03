@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.gatekeeper.display_manager import DisplayManager
 from src.gatekeeper.plate_detector import PlateDetection, PlateDetector
 
 try:
@@ -779,6 +780,7 @@ def run_until_interrupted(
     end_delay_seconds: float = 2,
     plate_detector: PlateDetector | None = None,
     debug_vision: DebugVision | None = None,
+    display_manager: DisplayManager | None = None,
 ) -> None:
     """Capture frames continuously until shutdown, detecting motion when enabled."""
     running = True
@@ -814,10 +816,23 @@ def run_until_interrupted(
             frame = camera.capture_frame()
             if motion_enabled:
                 motion_event_manager.process_frame(frame)
+            now = datetime.now(timezone.utc)
+            frame_interval = max(loop_started - last_frame_started, 0.000001)
+            measured_fps = 1 / frame_interval
+            if display_manager is not None and display_manager.requested_enabled:
+                display_manager.update_frame(
+                    frame,
+                    motion_state=motion_event_manager.state,
+                    fps=measured_fps,
+                    timestamp=now,
+                    plate_detection=motion_event_manager.last_plate_detection,
+                )
+                if display_manager.quit_requested:
+                    logger.info("Display quit requested; shutting down cleanly.")
+                    running = False
+                    if stop_event is not None:
+                        stop_event.set()
             if debug_vision is not None and debug_vision.enabled:
-                now = datetime.now(timezone.utc)
-                frame_interval = max(loop_started - last_frame_started, 0.000001)
-                measured_fps = 1 / frame_interval
                 annotated = debug_vision.annotate(
                     frame,
                     motion_state=motion_event_manager.state,
@@ -837,6 +852,8 @@ def run_until_interrupted(
             time.sleep(max(0, interval - elapsed))
     finally:
         camera.stop()
+        if display_manager is not None:
+            display_manager.close()
         if debug_vision is not None:
             debug_vision.close()
         if database is not None:
@@ -880,6 +897,21 @@ def main(argv: list[str] | None = None) -> int:
     end_delay_seconds = float(motion_config.get("end_delay_seconds", 2))
     plate_detector = PlateDetector()
     debug_config = config.get("debug", {})
+    display_config = config.get("display", {})
+    display_manager = DisplayManager(
+        enabled=bool(display_config.get("enabled", True)),
+        fullscreen=bool(display_config.get("fullscreen", False)),
+        window_name=str(display_config.get("window_name", "GateKeeper AI")),
+        show_fps=bool(display_config.get("show_fps", True)),
+        show_motion=bool(display_config.get("show_motion", True)),
+        show_plate_box=bool(display_config.get("show_plate_box", True)),
+        show_confidence=bool(display_config.get("show_confidence", True)),
+        show_timestamp=bool(display_config.get("show_timestamp", True)),
+        save_snapshot_key=str(display_config.get("save_snapshot_key", "s")),
+        version=version,
+        git_commit=git_commit,
+        logger=logger,
+    )
     debug_vision = DebugVision(
         enabled=bool(debug_config.get("enabled", False)),
         live_preview=bool(debug_config.get("live_preview", False)),
@@ -913,6 +945,7 @@ def main(argv: list[str] | None = None) -> int:
                 end_delay_seconds=end_delay_seconds,
                 plate_detector=plate_detector,
                 debug_vision=debug_vision,
+                display_manager=display_manager,
             )
     except Exception:
         camera.stop()

@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ IMAGE_DIR = PROJECT_ROOT / "images"
 LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
+DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 
 
@@ -156,6 +158,13 @@ class CameraManager:
         self.initialize()
         return self._camera is not None
 
+    def capture_frame(self) -> Any:
+        """Capture a frame while keeping the camera open."""
+        self.initialize()
+        if self._camera is None:
+            raise RuntimeError("Picamera2 is not initialized.")
+        return self._camera.capture_array()
+
     def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
         """Capture a JPEG image to the requested path."""
         self.initialize()
@@ -193,6 +202,90 @@ class CameraManager:
             self._camera = None
 
 
+class EventDatabase:
+    """Persist GateKeeper AI events to SQLite."""
+
+    def __init__(self, path: Path = DATABASE_PATH) -> None:
+        self.path = path
+        self.connection: sqlite3.Connection | None = None
+
+    def initialize(self) -> None:
+        """Open the database and create the events table."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(self.path, check_same_thread=False)
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                details TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.commit()
+
+    def insert_event(self, timestamp: str, event_type: str, details: str) -> None:
+        """Insert a single event row."""
+        if self.connection is None:
+            raise RuntimeError("Database is not initialized.")
+        self.connection.execute(
+            "INSERT INTO events (timestamp, event_type, details) VALUES (?, ?, ?)",
+            (timestamp, event_type, details),
+        )
+        self.connection.commit()
+
+    def close(self) -> None:
+        """Close the SQLite connection."""
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+
+
+class MotionDetector:
+    """Detect motion between consecutive camera frames using OpenCV."""
+
+    def __init__(self, min_area: int = 1000, threshold: int = 25) -> None:
+        self.min_area = min_area
+        self.threshold = threshold
+        self.previous_frame: Any | None = None
+
+    def _prepare_frame(self, frame: Any) -> Any:
+        import cv2
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
+        return cv2.GaussianBlur(gray, (21, 21), 0)
+
+    def detect(self, frame: Any) -> tuple[bool, float]:
+        """Return whether motion exists and the largest contour area."""
+        import cv2
+
+        prepared = self._prepare_frame(frame)
+        if self.previous_frame is None:
+            self.previous_frame = prepared
+            return False, 0.0
+
+        delta = cv2.absdiff(self.previous_frame, prepared)
+        self.previous_frame = prepared
+        thresh = cv2.threshold(delta, self.threshold, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        areas = [float(cv2.contourArea(contour)) for contour in contours]
+        max_area = max(areas, default=0.0)
+        return max_area >= self.min_area, max_area
+
+    @staticmethod
+    def save_motion_image(frame: Any, output_path: Path) -> Path:
+        """Save the motion frame without overwriting latest.jpg."""
+        import cv2
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
+        if not cv2.imwrite(str(output_path), image):
+            raise RuntimeError(f"Unable to save motion image: {output_path}")
+        return output_path
+
+
 @contextmanager
 def pid_file(path: Path = PID_FILE):
     """Create a runtime PID file and remove it on shutdown."""
@@ -224,14 +317,7 @@ def print_startup_status() -> None:
     print("Waiting...")
 
 
-def log_startup_metadata(
-    logger: logging.Logger,
-    version: str,
-    git_commit: str,
-    camera_info: dict[str, Any],
-    capture_time: str,
-    image_path: Path,
-) -> None:
+def log_startup_metadata(logger: logging.Logger, version: str, git_commit: str, camera_info: dict[str, Any], capture_time: str, image_path: Path) -> None:
     """Write startup metadata to logs/gatekeeper.log."""
     logger.info("Version: %s", version)
     logger.info("Git commit: %s", git_commit)
@@ -255,13 +341,14 @@ def capture_and_log_latest(camera: CameraManager, logger: logging.Logger) -> Pat
     return output_path
 
 
-def run_until_interrupted(
-    camera: CameraManager,
-    logger: logging.Logger,
-    stop_event: Any | None = None,
-    install_signal_handlers: bool = True,
-) -> None:
-    """Keep the application alive until SIGINT/SIGTERM, then stop the camera."""
+def motion_image_path(timestamp: str) -> Path:
+    """Build a filesystem-safe motion image path from an ISO timestamp."""
+    safe_timestamp = timestamp.replace(":", "").replace("+", "Z")
+    return IMAGE_DIR / f"motion_{safe_timestamp}.jpg"
+
+
+def run_until_interrupted(camera: CameraManager, logger: logging.Logger, stop_event: Any | None = None, install_signal_handlers: bool = True, fps: int = 1, motion_enabled: bool = True, motion_detector: MotionDetector | None = None, database: EventDatabase | None = None) -> None:
+    """Capture frames continuously until shutdown, detecting motion when enabled."""
     running = True
 
     def request_shutdown(signum: int, _frame: Any) -> None:
@@ -276,12 +363,29 @@ def run_until_interrupted(
     if install_signal_handlers:
         previous_sigint = signal.signal(signal.SIGINT, request_shutdown)
         previous_sigterm = signal.signal(signal.SIGTERM, request_shutdown)
+    interval = 1 / max(fps, 1)
+    motion_detector = motion_detector or MotionDetector()
     try:
         logger.info("Application remains running; press Ctrl+C to stop.")
         while running and (stop_event is None or not stop_event.is_set()):
-            time.sleep(0.5)
+            loop_started = time.monotonic()
+            frame = camera.capture_frame()
+            if motion_enabled:
+                motion, contour_area = motion_detector.detect(frame)
+                if motion:
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    image_path = motion_detector.save_motion_image(frame, motion_image_path(timestamp))
+                    details = f"Motion detected; contour_area={contour_area}; image={image_path}"
+                    logger.info("Motion detected timestamp=%s contour_area=%s image=%s", timestamp, contour_area, image_path)
+                    if database is not None:
+                        database.insert_event(timestamp, "MOTION", details)
+            elapsed = time.monotonic() - loop_started
+            time.sleep(max(0, interval - elapsed))
     finally:
         camera.stop()
+        if database is not None:
+            database.close()
+            logger.info("Database closed cleanly.")
         logger.info("Camera shut down cleanly.")
         if install_signal_handlers:
             signal.signal(signal.SIGINT, previous_sigint)
@@ -303,11 +407,11 @@ def main(argv: list[str] | None = None) -> int:
     logger = logging.getLogger("gatekeeper")
 
     camera_config = config.get("camera", {})
-    camera = CameraManager(
-        width=int(camera_config.get("width", 1640)),
-        height=int(camera_config.get("height", 1232)),
-        fps=int(camera_config.get("fps", 1)),
-    )
+    fps = int(camera_config.get("fps", 1))
+    camera = CameraManager(width=int(camera_config.get("width", 1640)), height=int(camera_config.get("height", 1232)), fps=fps)
+    database = EventDatabase()
+    motion_config = config.get("motion", {})
+    motion_detector = MotionDetector(min_area=int(motion_config.get("min_area", 1000)), threshold=int(motion_config.get("threshold", 25)))
 
     try:
         print_startup_banner(version, git_commit)
@@ -316,16 +420,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         with pid_file():
+            database.initialize()
             camera.health_check()
             image_path = camera.save_latest()
             capture_time = datetime.now(timezone.utc).isoformat()
-            log_startup_metadata(
-                logger, version, git_commit, camera.get_info(), capture_time, image_path
-            )
+            log_startup_metadata(logger, version, git_commit, camera.get_info(), capture_time, image_path)
             print_startup_status()
-            run_until_interrupted(camera, logger)
+            run_until_interrupted(camera, logger, fps=fps, motion_enabled=bool(motion_config.get("enabled", True)), motion_detector=motion_detector, database=database)
     except Exception:
         camera.stop()
+        database.close()
         logger.exception("Startup failed.")
         return 1
     return 0

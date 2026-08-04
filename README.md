@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.4 adds a lightweight embedded HTTP preview server for Raspberry Pi OS Lite with MJPEG streaming and status endpoints.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.7 establishes a single FRAME_MASTER pipeline so preview, diagnostics, snapshots, motion detection, and plate detection all consume the same processed frame.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.6.4
+ GateKeeper AI v0.6.7
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -31,6 +31,37 @@ After configuration, logging, database readiness, camera initialization, and the
 [OK] Capture
 Waiting...
 ```
+
+
+## Single Frame Pipeline architecture
+
+Release 0.6.7 makes `CameraManager.capture_frame()` the single public capture API for runtime consumers. The frame flow is:
+
+```text
+Picamera2
+↓
+capture_array()
+↓
+CameraManager.capture_frame()
+↓
+apply_color_pipeline()
+↓
+apply_orientation()
+↓
+FRAME_MASTER
+↓
+Motion Detector / Plate Detector / HTTP Preview / Snapshot / Diagnostics / Future OCR
+```
+
+`FRAME_MASTER` is an RGB ndarray that has already passed through the configured color pipeline, rotation, and flip settings. Runtime consumers must treat it as read-only input for analysis, overlay rendering, JPEG output, or persistence. No consumer owns an independent camera conversion path.
+
+### CameraManager responsibilities
+
+`CameraManager` owns camera acquisition, color pipeline selection, rotation, flips, and JPEG preparation. `capture_frame()` returns the processed RGB `FRAME_MASTER`; `encode_jpeg()` is the central JPEG preparation API for HTTP preview, diagnostics, and snapshots. Camera reconfiguration pauses acquisition, resets the motion detector frame cache through the live state, safely restarts camera acquisition, and resumes without terminating GateKeeper.
+
+### Pipeline verification
+
+GateKeeper records runtime metadata for the shared frame: frame id, shape, dtype, pipeline, rotation, and horizontal/vertical flip flags. `/api/pipeline` exposes the real runtime state for camera, preview, motion, plate, snapshot, diagnostics, and JPEG consumers. Startup validates the shared path and logs `FRAME PIPELINE VERIFIED` when the consumers agree, or `FRAME PIPELINE ERROR` / `FRAME PIPELINE MISMATCH` if one differs. Every 10 seconds the camera logs a `FRAME MASTER` summary with frame id, shape, pipeline, rotation, flips, and consumers.
 
 ## Runtime directory, database, and PID file
 

@@ -202,7 +202,7 @@ class LivePreviewState:
     def __init__(self, *, version: str, git_commit: str, max_events: int = 20) -> None:
         self.version = version
         self.git_commit = git_commit
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._frame: Any | None = None
         self._frame_jpeg: bytes | None = None
         self._plate_jpeg: bytes | None = None
@@ -312,6 +312,14 @@ class LivePreviewState:
                 "thresholds": self.detector_thresholds,
                 "camera_orientation": self.camera_orientation,
                 "camera_pipeline": self.camera_pipeline,
+                "active_pipeline": self.camera_pipeline,
+                "rotation": self.camera_orientation.get("rotation"),
+                "flip_horizontal": self.camera_orientation.get("flip_horizontal"),
+                "flip_vertical": self.camera_orientation.get("flip_vertical"),
+                "stream_pipeline": self.camera_pipeline,
+                "snapshot_pipeline": self.camera_pipeline,
+                "motion_pipeline": self.camera_pipeline,
+                "plate_pipeline": self.camera_pipeline,
                 "camera_controls": self.camera_controls,
                 "diagnostics": self.diagnostics,
             }
@@ -336,17 +344,9 @@ class LivePreviewState:
         if self.camera_manager is not None:
             self.camera_manager.reconfigure(camera_config)
             try:
-                raw_frame = self.camera_manager.capture_raw_frame()
+                self.diagnostics = self.camera_manager.generate_diagnostics(self.diagnostics_dir)
             except Exception:
-                raw_frame = None
-            if raw_frame is not None:
-                oriented_frame = apply_orientation(
-                    raw_frame,
-                    rotation=int(camera_config.get("rotation", 0)),
-                    flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
-                    flip_vertical=bool(camera_config.get("flip_vertical", False)),
-                )
-                self.diagnostics = generate_camera_diagnostics(oriented_frame, self.diagnostics_dir)
+                self.diagnostics = dict(self.diagnostics)
         self.camera_pipeline = str(camera_config.get("pipeline", self.camera_pipeline))
         self.camera_orientation = {
             "rotation": int(camera_config.get("rotation", 0)),
@@ -510,6 +510,8 @@ class CameraManager:
         self.pipeline = pipeline
         self.controls = controls or {}
         self._camera: Any | None = None
+        self._lock = threading.RLock()
+        self._paused = False
         self._pixel_format = "RGB888"
         self._frame_format = "RGB"
         self._last_shape: tuple[int, ...] | None = None
@@ -517,50 +519,72 @@ class CameraManager:
 
     def initialize(self) -> None:
         """Initialize and start Picamera2 if needed."""
-        if self._camera is not None:
-            return
+        with self._lock:
+            if self._camera is not None:
+                return
 
-        from picamera2 import Picamera2
+            from picamera2 import Picamera2
 
-        self._camera = Picamera2()
-        configuration = self._camera.create_still_configuration(
-            main={"size": (self.width, self.height), "format": self._pixel_format}
-        )
-        self._camera.configure(configuration)
-        self._camera.start()
-        self.apply_controls(self.controls)
-        time.sleep(max(0.1, 1 / max(self.fps, 1)))
+            self._camera = Picamera2()
+            configuration = self._camera.create_still_configuration(
+                main={"size": (self.width, self.height), "format": self._pixel_format}
+            )
+            self._camera.configure(configuration)
+            self._camera.start()
+            self._paused = False
+            self.apply_controls(self.controls)
+            time.sleep(max(0.1, 1 / max(self.fps, 1)))
 
     def health_check(self) -> bool:
         """Return True when the camera can be initialized."""
         self.initialize()
         return self._camera is not None
 
+    def get_processed_frame(self) -> Any:
+        """Return the single processed RGB frame used by every consumer."""
+        with self._lock:
+            self.initialize()
+            if self._camera is None:
+                raise RuntimeError("Picamera2 is not initialized.")
+            raw = self._camera.capture_array()
+            self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
+            self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
+            frame = apply_color_pipeline(raw, self.pipeline)
+            frame = apply_orientation(
+                frame,
+                rotation=self.rotation,
+                flip_horizontal=self.flip_horizontal,
+                flip_vertical=self.flip_vertical,
+            )
+            self.apply_controls(self.controls)
+            return frame
+
     def capture_frame(self) -> Any:
-        """Capture a frame while keeping the camera open."""
-        self.initialize()
-        if self._camera is None:
-            raise RuntimeError("Picamera2 is not initialized.")
-        raw = self._camera.capture_array()
-        self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
-        self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
-        oriented = apply_orientation(
-            raw,
-            rotation=self.rotation,
-            flip_horizontal=self.flip_horizontal,
-            flip_vertical=self.flip_vertical,
-        )
-        return apply_color_pipeline(oriented, self.pipeline)
+        """Capture the shared processed RGB frame while keeping the camera open."""
+        return self.get_processed_frame()
 
     def capture_raw_frame(self) -> Any:
-        """Capture exactly what Picamera2 returns."""
-        self.initialize()
-        if self._camera is None:
-            raise RuntimeError("Picamera2 is not initialized.")
-        raw = self._camera.capture_array()
-        self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
-        self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
-        return raw
+        """Capture exactly what Picamera2 returns for diagnostics only."""
+        with self._lock:
+            self.initialize()
+            if self._camera is None:
+                raise RuntimeError("Picamera2 is not initialized.")
+            raw = self._camera.capture_array()
+            self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
+            self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
+            return raw
+
+    def generate_diagnostics(self, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
+        """Generate diagnostic pipeline images from one locked camera acquisition."""
+        with self._lock:
+            raw = self.capture_raw_frame()
+            oriented = apply_orientation(
+                raw,
+                rotation=self.rotation,
+                flip_horizontal=self.flip_horizontal,
+                flip_vertical=self.flip_vertical,
+            )
+            return generate_camera_diagnostics(oriented, output_dir)
 
     def apply_controls(self, controls: dict[str, Any] | None = None) -> None:
         """Apply supported Picamera2 controls immediately."""
@@ -569,12 +593,29 @@ class CameraManager:
             self._camera.set_controls(self.controls)
 
     def reconfigure(self, camera_config: dict[str, Any]) -> None:
-        """Apply live camera pipeline, orientation, and controls."""
-        self.rotation = int(camera_config.get("rotation", self.rotation))
-        self.flip_horizontal = bool(camera_config.get("flip_horizontal", self.flip_horizontal))
-        self.flip_vertical = bool(camera_config.get("flip_vertical", self.flip_vertical))
-        self.pipeline = str(camera_config.get("pipeline", self.pipeline))
-        self.apply_controls(dict(camera_config.get("controls", self.controls) or {}))
+        """Safely apply live camera pipeline, orientation, flips, and controls."""
+        with self._lock:
+            self._paused = True
+            was_initialized = self._camera is not None
+            camera = self._camera
+            if camera is not None and hasattr(camera, "stop"):
+                camera.stop()
+            self.rotation = int(camera_config.get("rotation", self.rotation))
+            self.flip_horizontal = bool(camera_config.get("flip_horizontal", self.flip_horizontal))
+            self.flip_vertical = bool(camera_config.get("flip_vertical", self.flip_vertical))
+            self.pipeline = str(camera_config.get("pipeline", self.pipeline))
+            self.controls = dict(camera_config.get("controls", self.controls) or {})
+            if was_initialized and camera is not None:
+                configuration = camera.create_still_configuration(
+                    main={"size": (self.width, self.height), "format": self._pixel_format}
+                )
+                if hasattr(camera, "configure"):
+                    camera.configure(configuration)
+                if hasattr(camera, "start"):
+                    camera.start()
+                self.apply_controls(self.controls)
+                time.sleep(max(0.1, 1 / max(self.fps, 1)))
+            self._paused = False
 
     def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
         """Capture a JPEG image to the requested path."""
@@ -583,11 +624,11 @@ class CameraManager:
             raise RuntimeError("Picamera2 is not initialized.")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        frame = self.capture_frame()
-        import cv2
-        image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
-        if not cv2.imwrite(str(output_path), image):
-            raise RuntimeError(f"Unable to save capture: {output_path}")
+        frame = self.get_processed_frame()
+        jpeg = encode_jpeg(frame, color_order="RGB")
+        if jpeg is None:
+            raise RuntimeError(f"Unable to encode capture: {output_path}")
+        output_path.write_bytes(jpeg)
         if not output_path.is_file() or output_path.stat().st_size <= 0:
             raise RuntimeError(f"Captured image is empty or missing: {output_path}")
         return output_path
@@ -618,10 +659,11 @@ class CameraManager:
 
     def stop(self) -> None:
         """Stop and close Picamera2 resources during shutdown."""
-        if self._camera is not None:
-            self._camera.stop()
-            self._camera.close()
-            self._camera = None
+        with self._lock:
+            if self._camera is not None:
+                self._camera.stop()
+                self._camera.close()
+                self._camera = None
 
 
 class EventDatabase:
@@ -851,11 +893,16 @@ def log_startup_metadata(
     logger.info("Frame format: %s", camera_info.get("frame_format"))
     logger.info("Shape: %s", camera_info.get("shape"))
     logger.info("dtype: %s", camera_info.get("dtype"))
-    logger.info("Color pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Camera initialized")
+    logger.info("Selected pipeline: %s", camera_info.get("color_pipeline"))
     orientation = camera_info.get("orientation", {})
     logger.info("Rotation: %s", orientation.get("rotation"))
     logger.info("Flip H: %s", orientation.get("flip_horizontal"))
     logger.info("Flip V: %s", orientation.get("flip_vertical"))
+    logger.info("Motion pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Plate pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Stream pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Snapshot pipeline: %s", camera_info.get("color_pipeline"))
     logger.info("JPEG encoder format: %s", camera_info.get("jpeg_encoder_format"))
     logger.info("Capture time: %s", capture_time)
     logger.info("Image path: %s", image_path)
@@ -1431,14 +1478,7 @@ def main(argv: list[str] | None = None) -> int:
             plate_detector.initialize()
             camera.health_check()
             if bool(camera_config.get("diagnostics", False)):
-                live_preview_state.diagnostics = generate_camera_diagnostics(
-                    apply_orientation(
-                        camera.capture_raw_frame(),
-                        rotation=int(camera_config.get("rotation", 0)),
-                        flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
-                        flip_vertical=bool(camera_config.get("flip_vertical", False)),
-                    )
-                )
+                live_preview_state.diagnostics = camera.generate_diagnostics()
             image_path = camera.save_latest()
             if bool(web_config.get("enabled", True)):
                 live_preview_server.start()

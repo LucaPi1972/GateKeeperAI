@@ -42,6 +42,42 @@ PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
 DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
+JPEG_ENCODER_INPUT_FORMAT = "BGR"
+
+
+def frame_channels(frame: Any) -> int:
+    """Return the number of channels represented by a frame shape."""
+    if frame is None or not hasattr(frame, "shape"):
+        return 0
+    return int(frame.shape[2]) if len(frame.shape) >= 3 else 1
+
+
+def describe_frame(frame: Any, *, pipeline: str, rotation: int, flip_horizontal: bool, flip_vertical: bool) -> dict[str, Any]:
+    """Return runtime frame metadata for pipeline inspection."""
+    return {
+        "frame_id": id(frame),
+        "shape": tuple(frame.shape) if hasattr(frame, "shape") else None,
+        "dtype": str(frame.dtype) if hasattr(frame, "dtype") else None,
+        "channels": frame_channels(frame),
+        "pipeline": pipeline,
+        "rotation": rotation,
+        "flip_horizontal": flip_horizontal,
+        "flip_vertical": flip_vertical,
+    }
+
+
+def log_frame_step(logger: logging.Logger, name: str, frame: Any, *, pipeline: str, rotation: int, flip_horizontal: bool, flip_vertical: bool) -> None:
+    """Log one frame path inspection step."""
+    info = describe_frame(frame, pipeline=pipeline, rotation=rotation, flip_horizontal=flip_horizontal, flip_vertical=flip_vertical)
+    logger.info("%s", name)
+    logger.info("id(frame): %s", info["frame_id"])
+    logger.info("shape: %s", info["shape"])
+    logger.info("dtype: %s", info["dtype"])
+    logger.info("channels: %s", info["channels"])
+    logger.info("pipeline: %s", info["pipeline"])
+    logger.info("rotation: %s", info["rotation"])
+    logger.info("flip H: %s", info["flip_horizontal"])
+    logger.info("flip V: %s", info["flip_vertical"])
 
 
 def get_version() -> str:
@@ -228,6 +264,7 @@ class LivePreviewState:
         self.camera_manager: CameraManager | None = None
         self.detector_thresholds: dict[str, Any] = {}
         self.candidates: list[Any] = []
+        self.motion_event_manager: Any | None = None
 
     def update_frame(
         self,
@@ -322,6 +359,33 @@ class LivePreviewState:
                 "plate_pipeline": self.camera_pipeline,
                 "camera_controls": self.camera_controls,
                 "diagnostics": self.diagnostics,
+                "runtime_pipeline": self.pipeline_snapshot(),
+            }
+
+    def pipeline_snapshot(self) -> dict[str, Any]:
+        """Return current runtime camera pipeline mappings for diagnostics."""
+        with self._lock:
+            pipeline = self.camera_pipeline
+            if self.camera_manager is not None:
+                pipeline = str(getattr(self.camera_manager, "pipeline", pipeline))
+                rotation = int(getattr(self.camera_manager, "rotation", self.camera_orientation.get("rotation", 0)))
+                flip_horizontal = bool(getattr(self.camera_manager, "flip_horizontal", self.camera_orientation.get("flip_horizontal", False)))
+                flip_vertical = bool(getattr(self.camera_manager, "flip_vertical", self.camera_orientation.get("flip_vertical", False)))
+            else:
+                rotation = int(self.camera_orientation.get("rotation", 0) or 0)
+                flip_horizontal = bool(self.camera_orientation.get("flip_horizontal", False))
+                flip_vertical = bool(self.camera_orientation.get("flip_vertical", False))
+            return {
+                "camera_pipeline": pipeline,
+                "preview_pipeline": pipeline,
+                "motion_pipeline": pipeline,
+                "plate_pipeline": pipeline,
+                "snapshot_pipeline": pipeline,
+                "diagnostics_pipeline": pipeline,
+                "jpeg_encoder": JPEG_ENCODER_INPUT_FORMAT,
+                "rotation": rotation,
+                "flip_horizontal": flip_horizontal,
+                "flip_vertical": flip_vertical,
             }
 
     def save_snapshot(self) -> Path:
@@ -337,9 +401,26 @@ class LivePreviewState:
 
     def update_camera_config(self, updates: dict[str, Any]) -> dict[str, Any]:
         """Persist camera updates and apply them to the live CameraManager."""
+        logger = logging.getLogger("gatekeeper")
         config = load_config(self.config_path)
         camera_config = config.setdefault("camera", {})
+        old_pipeline = str(camera_config.get("pipeline", self.camera_pipeline))
+        old_rotation = int(camera_config.get("rotation", self.camera_orientation.get("rotation", 0) or 0))
+        old_flip_horizontal = bool(camera_config.get("flip_horizontal", self.camera_orientation.get("flip_horizontal", False)))
+        old_flip_vertical = bool(camera_config.get("flip_vertical", self.camera_orientation.get("flip_vertical", False)))
         camera_config.update(updates)
+        new_pipeline = str(camera_config.get("pipeline", old_pipeline))
+        new_rotation = int(camera_config.get("rotation", old_rotation))
+        new_flip_horizontal = bool(camera_config.get("flip_horizontal", old_flip_horizontal))
+        new_flip_vertical = bool(camera_config.get("flip_vertical", old_flip_vertical))
+        pipeline_changed = "pipeline" in updates and new_pipeline != old_pipeline
+        orientation_changed = any(key in updates for key in ("rotation", "flip_horizontal", "flip_vertical")) and (new_rotation, new_flip_horizontal, new_flip_vertical) != (old_rotation, old_flip_horizontal, old_flip_vertical)
+        if pipeline_changed:
+            log_pipeline_changed(logger, old_pipeline, new_pipeline)
+        if orientation_changed:
+            log_camera_reconfigure(logger, old_rotation, new_rotation, old_flip_horizontal, new_flip_horizontal, old_flip_vertical, new_flip_vertical)
+            if self.motion_event_manager is not None and hasattr(self.motion_event_manager, "reset"):
+                self.motion_event_manager.reset()
         save_config(config, self.config_path)
         if self.camera_manager is not None:
             self.camera_manager.reconfigure(camera_config)
@@ -516,6 +597,8 @@ class CameraManager:
         self._frame_format = "RGB"
         self._last_shape: tuple[int, ...] | None = None
         self._last_dtype: str | None = None
+        self._inspect_next_frame = True
+        self.logger = logging.getLogger("gatekeeper")
 
     def initialize(self) -> None:
         """Initialize and start Picamera2 if needed."""
@@ -556,6 +639,20 @@ class CameraManager:
                 flip_horizontal=self.flip_horizontal,
                 flip_vertical=self.flip_vertical,
             )
+            if self._inspect_next_frame:
+                self.logger.info("======================================================")
+                self.logger.info("FRAME INSPECT")
+                self.logger.info("======================================================")
+                log_frame_step(self.logger, "Capture", raw, pipeline="Picamera2", rotation=0, flip_horizontal=False, flip_vertical=False)
+                log_frame_step(self.logger, "CameraManager", frame, pipeline=self.pipeline, rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+                for component in ("Motion Detector", "Plate Detector", "HTTP Preview", "Snapshot"):
+                    self.logger.info("↓")
+                    log_frame_step(self.logger, component, frame, pipeline=self.pipeline, rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+                self.logger.info("↓")
+                self.logger.info("JPEG encoder")
+                self.logger.info("input format: %s", JPEG_ENCODER_INPUT_FORMAT)
+                self.logger.info("======================================================")
+                self._inspect_next_frame = False
             self.apply_controls(self.controls)
             return frame
 
@@ -606,6 +703,7 @@ class CameraManager:
             self.pipeline = str(camera_config.get("pipeline", self.pipeline))
             self.controls = dict(camera_config.get("controls", self.controls) or {})
             if was_initialized and camera is not None:
+                self._inspect_next_frame = True
                 configuration = camera.create_still_configuration(
                     main={"size": (self.width, self.height), "format": self._pixel_format}
                 )
@@ -646,6 +744,8 @@ class CameraManager:
         return {
             "backend": CAMERA_BACKEND,
             "resolution": f"{self.width}x{self.height}",
+            "width": self.width,
+            "height": self.height,
             "pixel_format": self._pixel_format,
             "sensor": properties.get("Sensor", "unknown") if self._camera is not None else "unknown",
             "camera_model": model,
@@ -653,7 +753,7 @@ class CameraManager:
             "shape": self._last_shape,
             "dtype": self._last_dtype,
             "color_pipeline": self.pipeline,
-            "jpeg_encoder_format": "BGR",
+            "jpeg_encoder_format": JPEG_ENCODER_INPUT_FORMAT,
             "orientation": {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical},
         }
 
@@ -664,6 +764,7 @@ class CameraManager:
                 self._camera.stop()
                 self._camera.close()
                 self._camera = None
+                self._inspect_next_frame = True
 
 
 class EventDatabase:
@@ -798,6 +899,11 @@ class MotionDetector:
         self.min_area = min_area
         self.threshold = threshold
         self.previous_frame: Any | None = None
+        self.logger = logging.getLogger("gatekeeper")
+
+    def reset(self) -> None:
+        """Clear previous frame state after camera shape/orientation changes."""
+        self.previous_frame = None
 
     def _prepare_frame(self, frame: Any) -> Any:
         import cv2
@@ -813,6 +919,13 @@ class MotionDetector:
 
         prepared = self._prepare_frame(frame)
         if self.previous_frame is None:
+            self.previous_frame = prepared
+            return False, 0.0
+
+        if getattr(self.previous_frame, "shape", None) != getattr(prepared, "shape", None):
+            self.logger.warning("MotionDetector reset because frame size changed")
+            self.logger.warning("old shape: %s", getattr(self.previous_frame, "shape", None))
+            self.logger.warning("new shape: %s", getattr(prepared, "shape", None))
             self.previous_frame = prepared
             return False, 0.0
 
@@ -881,6 +994,31 @@ def log_startup_metadata(
     image_path: Path,
 ) -> None:
     """Write startup metadata to logs/gatekeeper.log."""
+    orientation = camera_info.get("orientation", {})
+    logger.info("======================================================")
+    logger.info("FRAME PIPELINE")
+    logger.info("======================================================")
+    logger.info("Picamera2")
+    logger.info("---------")
+    logger.info("Camera model: %s", camera_info.get("camera_model"))
+    logger.info("Sensor: %s", camera_info.get("sensor"))
+    logger.info("Pixel format: %s", camera_info.get("pixel_format"))
+    logger.info("Frame format: %s", camera_info.get("frame_format"))
+    logger.info("Width: %s", camera_info.get("width"))
+    logger.info("Height: %s", camera_info.get("height"))
+    logger.info("dtype: %s", camera_info.get("dtype"))
+    logger.info("CameraManager")
+    logger.info("-------------")
+    logger.info("Selected pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Rotation: %s", orientation.get("rotation"))
+    logger.info("Flip Horizontal: %s", orientation.get("flip_horizontal"))
+    logger.info("Flip Vertical: %s", orientation.get("flip_vertical"))
+    logger.info("Motion Detector: %s", camera_info.get("color_pipeline"))
+    logger.info("Plate Detector: %s", camera_info.get("color_pipeline"))
+    logger.info("HTTP Preview: %s", camera_info.get("color_pipeline"))
+    logger.info("Snapshot: %s", camera_info.get("color_pipeline"))
+    logger.info("JPEG Encoder input format: %s", camera_info.get("jpeg_encoder_format"))
+    logger.info("======================================================")
     logger.info("Version: %s", version)
     logger.info("Git commit: %s", git_commit)
     logger.info("Python version: %s", platform.python_version())
@@ -895,7 +1033,6 @@ def log_startup_metadata(
     logger.info("dtype: %s", camera_info.get("dtype"))
     logger.info("Camera initialized")
     logger.info("Selected pipeline: %s", camera_info.get("color_pipeline"))
-    orientation = camera_info.get("orientation", {})
     logger.info("Rotation: %s", orientation.get("rotation"))
     logger.info("Flip H: %s", orientation.get("flip_horizontal"))
     logger.info("Flip V: %s", orientation.get("flip_vertical"))
@@ -908,6 +1045,41 @@ def log_startup_metadata(
     logger.info("Image path: %s", image_path)
     logger.info("Image size: %d bytes", image_path.stat().st_size)
 
+
+
+def log_pipeline_changed(logger: logging.Logger, old_pipeline: str, new_pipeline: str) -> None:
+    """Log runtime pipeline replacement sequencing."""
+    logger.info("======================================================")
+    logger.info("PIPELINE CHANGED")
+    logger.info("======================================================")
+    logger.info("Old pipeline: %s", old_pipeline)
+    logger.info("New pipeline: %s", new_pipeline)
+    logger.info("Stopping Motion Detector")
+    logger.info("Stopping Preview")
+    logger.info("Stopping Camera")
+    logger.info("Restart Camera")
+    logger.info("Restart Preview")
+    logger.info("Restart Motion")
+    logger.info("Completed")
+    logger.info("======================================================")
+
+
+def log_camera_reconfigure(logger: logging.Logger, old_rotation: int, new_rotation: int, old_flip_h: bool, new_flip_h: bool, old_flip_v: bool, new_flip_v: bool) -> None:
+    """Log orientation reconfiguration sequencing."""
+    logger.info("======================================================")
+    logger.info("CAMERA RECONFIGURE")
+    logger.info("======================================================")
+    logger.info("Old rotation: %s", old_rotation)
+    logger.info("New rotation: %s", new_rotation)
+    logger.info("Old flip H: %s", old_flip_h)
+    logger.info("New flip H: %s", new_flip_h)
+    logger.info("Old flip V: %s", old_flip_v)
+    logger.info("New flip V: %s", new_flip_v)
+    logger.info("Reset Motion Detector")
+    logger.info("Reset previous_frame")
+    logger.info("Restart camera")
+    logger.info("Completed")
+    logger.info("======================================================")
 
 def capture_and_log_latest(camera: CameraManager, logger: logging.Logger) -> Path:
     """Capture latest.jpg and log the UTC capture time and size."""
@@ -1102,6 +1274,19 @@ class MotionEventManager:
         self.last_motion_time: datetime | None = None
         self.max_contour_area = 0.0
         self.image_start: Path | None = None
+
+    def reset(self) -> None:
+        """Reset motion event state and detector frame cache after camera changes."""
+        if hasattr(self.detector, "reset"):
+            self.detector.reset()
+        elif hasattr(self.detector, "previous_frame"):
+            self.detector.previous_frame = None
+        self.state = self.IDLE
+        self.event_id = None
+        self.start_time = None
+        self.last_motion_time = None
+        self.max_contour_area = 0.0
+        self.image_start = None
 
     def process_frame(self, frame: Any) -> None:
         """Process one frame and create events only on motion boundaries."""
@@ -1459,6 +1644,16 @@ def main(argv: list[str] | None = None) -> int:
     live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
     live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
+    motion_event_manager = MotionEventManager(
+        motion_detector,
+        database,
+        logger,
+        end_delay_seconds,
+        plate_detector,
+        debug_vision,
+        live_preview_state,
+    )
+    live_preview_state.motion_event_manager = motion_event_manager
     live_preview_server = LivePreviewServer(
         state=live_preview_state,
         host=str(web_config.get("host", "0.0.0.0")),
@@ -1494,6 +1689,7 @@ def main(argv: list[str] | None = None) -> int:
                 motion_enabled=bool(motion_config.get("enabled", True)),
                 motion_detector=motion_detector,
                 database=database,
+                motion_event_manager=motion_event_manager,
                 end_delay_seconds=end_delay_seconds,
                 plate_detector=plate_detector,
                 debug_vision=debug_vision,

@@ -43,6 +43,10 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     def diagnostics_status():
         return jsonify(state.frame_info())
 
+    @app.get("/api/pipeline")
+    def pipeline_status():
+        return jsonify(state.pipeline_snapshot())
+
     @app.post("/api/camera")
     def update_camera():
         payload = request.get_json(silent=True) or {}

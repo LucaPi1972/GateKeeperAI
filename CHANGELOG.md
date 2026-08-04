@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.2
+## 0.6.3
 
 - Add camera orientation calibration, corrected RGB/BGR logging, configurable plate detector filters, debug MJPEG endpoints, calibration panel metadata, and overlay snapshots.
 

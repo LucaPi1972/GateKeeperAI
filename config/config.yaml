@@ -8,6 +8,17 @@ camera:
   rotation: 180
   flip_horizontal: false
   flip_vertical: false
+  diagnostics: true
+  pipeline: rgb
+  controls:
+    AwbEnable: true
+    AeEnable: true
+    Brightness: 0.0
+    Contrast: 1.0
+    Saturation: 1.0
+    Sharpness: 1.0
+    ExposureValue: 0.0
+    AnalogueGain: 1.0
 
 display:
   enabled: true

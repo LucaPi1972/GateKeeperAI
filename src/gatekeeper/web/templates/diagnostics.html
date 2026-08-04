@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GateKeeper AI Camera Diagnostics</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="dashboard diagnostics-page">
+    <section class="preview-card">
+      <p class="eyebrow">Camera Diagnostics</p>
+      <h1>Pipeline Selection & Color Calibration</h1>
+      <div id="diagnostic_images" class="diagnostic-grid"></div>
+    </section>
+    <aside class="status-card">
+      <p class="eyebrow">Orientation</p>
+      <label>Rotation
+        <select id="rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select>
+      </label>
+      <label><input type="checkbox" id="flip_horizontal"> Flip Horizontal</label>
+      <label><input type="checkbox" id="flip_vertical"> Flip Vertical</label>
+      <p class="eyebrow">Camera Controls</p>
+      <label><input type="checkbox" id="AwbEnable"> Auto White Balance</label>
+      <label><input type="checkbox" id="AeEnable"> Auto Exposure</label>
+      <label>Brightness <input type="number" step="0.1" id="Brightness"></label>
+      <label>Contrast <input type="number" step="0.1" id="Contrast"></label>
+      <label>Saturation <input type="number" step="0.1" id="Saturation"></label>
+      <label>Sharpness <input type="number" step="0.1" id="Sharpness"></label>
+      <label>Exposure Compensation <input type="number" step="0.1" id="ExposureValue"></label>
+      <label>Gain <input type="number" step="0.1" id="AnalogueGain"></label>
+      <button id="save_camera" type="button">Save Camera Configuration</button>
+      <pre id="camera_status"></pre>
+    </aside>
+  </main>
+<script>
+const names = [['frame_raw.jpg','raw'],['frame_rgb.jpg','rgb'],['frame_bgr.jpg','bgr'],['frame_swap_rb.jpg','swap_rb']];
+function controls(){const c={}; for (const id of ['AwbEnable','AeEnable']) c[id]=document.getElementById(id).checked; for (const id of ['Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) { const v=document.getElementById(id).value; if (v !== '') c[id]=Number(v); } return c;}
+async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); document.getElementById('camera_status').textContent=JSON.stringify(await r.json(), null, 2); }
+function render(){ const root=document.getElementById('diagnostic_images'); root.innerHTML=''; for (const [file,pipeline] of names){ const card=document.createElement('article'); card.className='diagnostic-card'; card.innerHTML=`<h2>${file}</h2><p>Pipeline: ${pipeline}</p><img src="/diagnostics/${file}?t=${Date.now()}" alt="${file}"><button type="button">Use this pipeline</button>`; card.querySelector('button').onclick=()=>apply({pipeline}); root.appendChild(card); }}
+for (const id of ['rotation','flip_horizontal','flip_vertical']) document.addEventListener('change', e=>{ if(e.target.id===id) apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked}); });
+document.getElementById('save_camera').onclick=()=>apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked, controls:controls()});
+for (const id of ['AwbEnable','AeEnable','Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) document.getElementById(id).addEventListener('change', ()=>apply({controls:controls()}));
+render(); fetch('/api/diagnostics').then(r=>r.json()).then(s=>{rotation.value=s.camera_orientation?.rotation ?? 0; flip_horizontal.checked=!!s.camera_orientation?.flip_horizontal; flip_vertical.checked=!!s.camera_orientation?.flip_vertical; camera_status.textContent=JSON.stringify(s,null,2);});
+</script>
+</body>
+</html>

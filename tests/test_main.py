@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.5.2"
+    assert main.get_version() == "0.6.0"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.5.2" in output
+    assert "GateKeeper AI v0.6.0" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -473,7 +473,9 @@ def test_display_manager_disables_when_headless(monkeypatch, caplog):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setattr(main.platform, "system", lambda: "Linux")
-    monkeypatch.setattr("src.gatekeeper.display_manager.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "src.gatekeeper.display_manager.platform.system", lambda: "Linux"
+    )
     logger = logging.getLogger("test-gatekeeper")
 
     with caplog.at_level(logging.INFO, logger="test-gatekeeper"):
@@ -489,8 +491,10 @@ def test_display_manager_draws_green_plate_overlay_and_snapshot(tmp_path, monkey
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 180, 3), dtype=np.uint8)
     detection = main.PlateDetection((25, 35, 80, 20), 0.85, object())
-    display = main.DisplayManager(enabled=False, version="0.5.2", git_commit="abc123")
-    monkeypatch.setattr("src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots")
+    display = main.DisplayManager(enabled=False, version="0.6.0", git_commit="abc123")
+    monkeypatch.setattr(
+        "src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots"
+    )
 
     annotated = display.draw_overlays(
         frame,
@@ -514,7 +518,9 @@ def test_display_manager_keyboard_shortcuts(monkeypatch, tmp_path):
     np = pytest.importorskip("numpy")
     frame = np.zeros((20, 20, 3), dtype=np.uint8)
     display = main.DisplayManager(enabled=False)
-    monkeypatch.setattr("src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots")
+    monkeypatch.setattr(
+        "src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots"
+    )
 
     display.handle_key(ord("d"), frame)
     assert display.overlays_enabled is False
@@ -528,12 +534,18 @@ def test_display_manager_keyboard_shortcuts(monkeypatch, tmp_path):
 
 def test_display_manager_window_creation_and_close(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":99")
-    monkeypatch.setattr("src.gatekeeper.display_manager.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "src.gatekeeper.display_manager.platform.system", lambda: "Linux"
+    )
     cv2 = pytest.importorskip("cv2")
     calls = []
     monkeypatch.setattr(cv2, "namedWindow", lambda *args: calls.append(("named", args)))
-    monkeypatch.setattr(cv2, "setWindowProperty", lambda *args: calls.append(("prop", args)))
-    monkeypatch.setattr(cv2, "destroyWindow", lambda *args: calls.append(("destroy", args)))
+    monkeypatch.setattr(
+        cv2, "setWindowProperty", lambda *args: calls.append(("prop", args))
+    )
+    monkeypatch.setattr(
+        cv2, "destroyWindow", lambda *args: calls.append(("destroy", args))
+    )
 
     display = main.DisplayManager(enabled=True, fullscreen=True, window_name="Test")
     display.create_window()
@@ -542,3 +554,79 @@ def test_display_manager_window_creation_and_close(monkeypatch):
     assert calls[0][0] == "named"
     assert any(call[0] == "prop" for call in calls)
     assert calls[-1][0] == "destroy"
+
+
+def test_default_config_contains_web_live_preview_settings():
+    config = main.load_config()
+
+    assert config["web"] == {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 8080,
+        "stream_fps": 5,
+    }
+
+
+def test_live_preview_state_serves_shared_frame_and_metadata():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((20, 30, 3), dtype=np.uint8)
+    crop = np.zeros((5, 10, 3), dtype=np.uint8)
+    detection = main.PlateDetection((1, 2, 10, 5), 0.77, object())
+    state = main.LivePreviewState(version="0.6.0", git_commit="abc123")
+
+    state.update_frame(
+        frame,
+        motion_state=main.MotionEventManager.MOTION_STARTED,
+        fps=5.5,
+        resolution="30x20",
+        plate_detection=detection,
+        plate_crop=crop,
+    )
+    state.record_motion_event({"type": "MOTION_START", "timestamp": "now"})
+
+    status = state.snapshot()
+    assert status["motion_status"] == main.MotionEventManager.MOTION_STARTED
+    assert status["plate_bounding_box"] == (1, 2, 10, 5)
+    assert status["confidence"] == 0.77
+    assert status["resolution"] == "30x20"
+    assert status["fps"] == 5.5
+    assert status["version"] == "0.6.0"
+    assert status["git_commit"] == "abc123"
+    assert state.events_snapshot()[0]["type"] == "MOTION_START"
+    assert (
+        cv2.imdecode(
+            np.frombuffer(state.latest_frame_jpeg(), dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        is not None
+    )
+    assert (
+        cv2.imdecode(
+            np.frombuffer(state.latest_plate_jpeg(), dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        is not None
+    )
+
+
+def test_live_preview_server_routes_use_shared_state(monkeypatch):
+    pytest.importorskip("flask")
+    np = pytest.importorskip("numpy")
+    state = main.LivePreviewState(version="0.6.0", git_commit="abc123")
+    state.update_frame(
+        np.zeros((20, 30, 3), dtype=np.uint8),
+        motion_state=main.MotionEventManager.IDLE,
+        fps=1.0,
+        resolution="30x20",
+    )
+    server = main.LivePreviewServer(state=state)
+    monkeypatch.setattr(main.threading.Thread, "start", lambda self: None)
+
+    assert server.start() is True
+    client = server._app.test_client()
+
+    assert client.get("/health").json == {"status": "ok", "version": "0.6.0"}
+    assert client.get("/").status_code == 200
+    assert client.get("/api/status").json["resolution"] == "30x20"
+    assert client.get("/api/events").json == {"events": []}
+    assert client.get("/api/latest_frame").mimetype == "image/jpeg"
+    assert client.get("/api/latest_plate").status_code == 404

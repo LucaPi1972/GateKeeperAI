@@ -30,6 +30,13 @@
       <label>Exposure Compensation <input type="number" step="0.1" id="ExposureValue"></label>
       <label>Gain <input type="number" step="0.1" id="AnalogueGain"></label>
       <button id="save_camera" type="button">Save Camera Configuration</button>
+      <p class="eyebrow">Runtime Verification</p>
+      <dl>
+        <dt>Verification</dt><dd id="verification_status">UNKNOWN</dd>
+        <dt>Frame IDs</dt><dd id="verification_ids">n/a</dd>
+        <dt>Checksums</dt><dd id="verification_checksums">n/a</dd>
+        <dt>Pipeline</dt><dd id="verification_pipeline">n/a</dd>
+      </dl>
       <p class="eyebrow">Current Runtime Pipeline</p>
       <pre id="pipeline_status"></pre>
       <pre id="camera_status"></pre>
@@ -38,7 +45,7 @@
 <script>
 const names = [['frame_raw.jpg','raw'],['frame_rgb.jpg','rgb'],['frame_bgr.jpg','bgr'],['frame_swap_rb.jpg','swap_rb']];
 function controls(){const c={}; for (const id of ['AwbEnable','AeEnable']) c[id]=document.getElementById(id).checked; for (const id of ['Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) { const v=document.getElementById(id).value; if (v !== '') c[id]=Number(v); } return c;}
-async function refreshPipeline(){ const p=await fetch('/api/pipeline').then(r=>r.json()); pipeline_status.textContent=JSON.stringify(p,null,2); return p; }
+async function refreshPipeline(){ const p=await fetch('/api/pipeline').then(r=>r.json()); pipeline_status.textContent=JSON.stringify(p,null,2); verification_status.textContent=p.verification || 'UNKNOWN'; verification_ids.textContent=JSON.stringify({raw:p.raw_frame_id, master:p.master_frame_id, preview:p.preview_frame_id, snapshot:p.snapshot_frame_id, motion:p.motion_frame_id, plate:p.plate_frame_id, diagnostics:p.diagnostics_source_id}); verification_checksums.textContent=JSON.stringify({master:p.checksum, preview:p.preview_checksum, snapshot:p.snapshot_checksum}); verification_pipeline.textContent=JSON.stringify({pipeline:p.pipeline, rotation:p.rotation, flip:p.flip}); return p; }
 async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); document.getElementById('camera_status').textContent=JSON.stringify(await r.json(), null, 2); await refreshPipeline(); render(); }
 function currentPipeline(){ try { return JSON.parse(pipeline_status.textContent || '{}')?.camera_pipeline || JSON.parse(camera_status.textContent || '{}')?.camera?.pipeline || JSON.parse(camera_status.textContent || '{}')?.active_pipeline || 'rgb'; } catch { return 'rgb'; }}
 function render(){ const root=document.getElementById('diagnostic_images'); const active=currentPipeline(); root.innerHTML=''; for (const [file,pipeline] of names){ const selected=pipeline===active; const card=document.createElement('article'); card.className='diagnostic-card'; card.innerHTML=`<h2>${file}</h2><p>Pipeline: ${pipeline}</p><img src="/diagnostics/${file}?t=${Date.now()}" alt="${file}"><button type="button" ${selected ? 'disabled' : ''}>${selected ? '✔ Active Pipeline' : 'Use this pipeline'}</button>`; card.querySelector('button').onclick=()=>apply({pipeline}); root.appendChild(card); }}

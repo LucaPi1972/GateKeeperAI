@@ -75,7 +75,9 @@ class PlateDetector:
         if cv2 is None:
             raise RuntimeError("PlateDetector is not initialized.")
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
+        import sys
+        camera_manager = getattr(sys.modules.get("main") or sys.modules.get("__main__"), "CameraManager")
+        gray = camera_manager.to_gray(frame)
         filtered = cv2.bilateralFilter(gray, 11, 17, 17)
         edged = cv2.Canny(filtered, 30, 200)
         contours, _ = cv2.findContours(edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)

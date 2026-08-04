@@ -320,40 +320,28 @@ Each endpoint returns MJPEG and leaves the normal HTTP Preview `/stream` behavio
 4. Tune confidence, aspect ratio, area, rectangularity, rotation, and border margin until rejected candidates are red and the selected candidate is green.
 5. Use `/api/snapshot` or the display snapshot shortcut to save `snapshot_<timestamp>.jpg` files with overlays for comparison.
 
-## Release 0.6.4 camera diagnostics
+## Release 0.6.7 single frame architecture
 
-Release 0.6.4 is limited to camera calibration and diagnostics. It does not implement OCR, does not change the database schema, and does not alter motion-detection logic.
+Release 0.6.7 is an architecture refactor only. It does not implement OCR, improve plate detection, change the database schema, add features, or alter the motion detection algorithm.
 
-### Camera Diagnostics
+### RAW_FRAME
 
-Enable one-frame camera diagnostics in `config/config.yaml`:
+`RAW_FRAME` is the exact image object returned by Picamera2 `capture_array()`. GateKeeper AI never modifies, rotates, flips, color-converts, encodes, or annotates this object. It exists as the camera truth source and as the input to camera diagnostics.
 
-```yaml
-camera:
-  diagnostics: true
+### FRAME_MASTER
+
+`FRAME_MASTER` is generated only by `CameraManager` from `RAW_FRAME`. `CameraManager` applies the selected color pipeline, then rotation, then flips. This is the only runtime image object consumed by motion detection, plate detection, HTTP live preview, snapshots, display/debug surfaces, and future OCR.
+
+### Diagnostics
+
+Diagnostics are a camera calibration tool, not the runtime preview. Each diagnostics refresh starts from `RAW_FRAME` and writes four calibration cards: `frame_raw.jpg`, `frame_rgb.jpg`, `frame_bgr.jpg`, and `frame_swap_rb.jpg`. Changing the runtime pipeline, rotation, or flips does not change the source used for diagnostics cards.
+
+### Runtime consumers
+
+The runtime path is deterministic:
+
+```text
+Picamera2 -> capture_array() -> RAW_FRAME -> CameraManager.apply_pipeline() -> CameraManager.apply_rotation() -> CameraManager.apply_flip() -> FRAME_MASTER -> Motion -> Plate Detector -> HTTP Preview -> Snapshot -> Future OCR
 ```
 
-At startup GateKeeper AI captures one raw Picamera2 frame and writes these files under `diagnostics/` with no overlays, resizing, or explicit compression changes:
-
-- `frame_raw.jpg`: exactly what Picamera2 returns.
-- `frame_rgb.jpg`: the frame interpreted as RGB.
-- `frame_bgr.jpg`: RGB converted to BGR before JPEG encoding.
-- `frame_swap_rb.jpg`: red and blue channels swapped explicitly.
-
-Startup logging records camera model, sensor, pixel format, frame format, shape, dtype, selected color pipeline, rotation, horizontal/vertical flips, and JPEG encoder input format.
-
-### Pipeline Selection
-
-Open `/diagnostics` in the embedded web server to compare all four generated images. Each card shows the image name, its pipeline, and a **Use this pipeline** button. Selecting a pipeline updates `config/config.yaml`, reloads the live `CameraManager` pipeline immediately, and affects snapshots, live preview, motion frames, and the plate detector input without restarting the application.
-
-### Color Calibration
-
-Use the diagnostic images to choose the pipeline with natural colors. The selected `camera.pipeline` value may be `raw`, `rgb`, `bgr`, or `swap_rb`. Plate detection continues to use the selected camera pipeline only; this release does not add OCR.
-
-### Rotation
-
-The `/diagnostics` page provides immediate orientation controls for `0°`, `90°`, `180°`, and `270°` rotation plus horizontal and vertical flips. Changes are applied live and persisted as `camera.rotation`, `camera.flip_horizontal`, and `camera.flip_vertical`.
-
-### Camera Controls
-
-The diagnostics page exposes live Picamera2 controls for Auto White Balance, Auto Exposure, Brightness, Contrast, Saturation, Sharpness, Exposure Compensation, and Gain when supported by the camera. The **Save Camera Configuration** button writes the selected pipeline, orientation, flips, and control values to `config/config.yaml`.
+Live preview and snapshots use `CameraManager.encode_jpeg(FRAME_MASTER)` and never regenerate colors, rotation, or flips independently. `/api/pipeline` exposes frame object IDs, pipeline settings, and CRC32 checksums for runtime verification. The diagnostics page includes a **Runtime Verification** section showing those IDs, checksums, pipeline settings, and PASS/FAIL status.

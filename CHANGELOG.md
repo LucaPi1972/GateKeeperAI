@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7
+
+- Refactor runtime capture around one CameraManager-owned FRAME_MASTER consumed by preview, diagnostics, snapshots, motion detection, and plate detection.
+- Add runtime pipeline metadata, `/api/pipeline` frame id reporting, startup verification logs, mismatch logging, and periodic FRAME MASTER debug summaries.
+- Centralize JPEG preparation behind `CameraManager.encode_jpeg()` while preserving the existing motion, plate, and SQLite behavior.
+
 ## 0.6.6
 
 - Add a diagnostic camera pipeline inspector for startup, reconfiguration, first-frame runtime path logging, and the `/api/pipeline` runtime endpoint.

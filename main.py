@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from collections import deque
+from dataclasses import dataclass
 
 from src.gatekeeper.display_manager import DisplayManager
 from src.gatekeeper.plate_detector import PlateDetection, PlateDetector
@@ -43,6 +44,42 @@ DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
 JPEG_ENCODER_INPUT_FORMAT = "BGR"
+
+
+@dataclass(frozen=True)
+class FrameMaster:
+    """Metadata describing the one processed frame shared by all consumers."""
+
+    frame_id: int
+    shape: tuple[int, ...] | None
+    dtype: str | None
+    pipeline: str
+    rotation: int
+    flip_horizontal: bool
+    flip_vertical: bool
+
+    @classmethod
+    def from_frame(cls, frame: Any, *, pipeline: str, rotation: int, flip_horizontal: bool, flip_vertical: bool) -> "FrameMaster":
+        return cls(
+            frame_id=id(frame),
+            shape=tuple(frame.shape) if hasattr(frame, "shape") else None,
+            dtype=str(frame.dtype) if hasattr(frame, "dtype") else None,
+            pipeline=pipeline,
+            rotation=rotation,
+            flip_horizontal=flip_horizontal,
+            flip_vertical=flip_vertical,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "frame_id": self.frame_id,
+            "shape": self.shape,
+            "dtype": self.dtype,
+            "pipeline": self.pipeline,
+            "rotation": self.rotation,
+            "flip_horizontal": self.flip_horizontal,
+            "flip_vertical": self.flip_vertical,
+        }
 
 
 def frame_channels(frame: Any) -> int:
@@ -241,6 +278,9 @@ class LivePreviewState:
         self._lock = threading.RLock()
         self._frame: Any | None = None
         self._frame_jpeg: bytes | None = None
+        self._frame_master: FrameMaster | None = None
+        self._consumer_frames: dict[str, FrameMaster] = {}
+        self._last_master_log = 0.0
         self._plate_jpeg: bytes | None = None
         self.motion_state = (
             MotionEventManager.IDLE if "MotionEventManager" in globals() else "IDLE"
@@ -290,14 +330,19 @@ class LivePreviewState:
             plate_detection=plate_detection,
             display_config=self.display_config,
         )
-        encoded_frame = encode_jpeg(annotated_frame, color_order="RGB")
-        encoded_plate = encode_jpeg(plate_crop, color_order="RGB") if plate_crop is not None else None
+        encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
+        encoded_frame = encoder(annotated_frame)
+        encoded_plate = encoder(plate_crop) if plate_crop is not None else None
+        master = FrameMaster.from_frame(frame, pipeline=self.camera_pipeline, rotation=int(self.camera_orientation.get("rotation", 0) or 0), flip_horizontal=bool(self.camera_orientation.get("flip_horizontal", False)), flip_vertical=bool(self.camera_orientation.get("flip_vertical", False)))
+        consumers = {name: master for name in ("preview", "snapshot", "diagnostics", "motion", "plate", "jpeg")}
         height = int(frame.shape[0]) if hasattr(frame, "shape") else None
         width = int(frame.shape[1]) if hasattr(frame, "shape") and len(frame.shape) > 1 else None
         candidates = list(getattr(plate_detection, "candidates", []) or [])
         with self._lock:
             self._frame = annotated_frame.copy() if hasattr(annotated_frame, "copy") else annotated_frame
             self._frame_jpeg = encoded_frame
+            self._frame_master = master
+            self._consumer_frames = consumers
             self.width = width
             self.height = height
             if encoded_plate is not None:
@@ -375,18 +420,27 @@ class LivePreviewState:
                 rotation = int(self.camera_orientation.get("rotation", 0) or 0)
                 flip_horizontal = bool(self.camera_orientation.get("flip_horizontal", False))
                 flip_vertical = bool(self.camera_orientation.get("flip_vertical", False))
-            return {
+            frame_id = self._frame_master.frame_id if self._frame_master is not None else None
+            snapshot = {
                 "camera_pipeline": pipeline,
                 "preview_pipeline": pipeline,
                 "motion_pipeline": pipeline,
                 "plate_pipeline": pipeline,
                 "snapshot_pipeline": pipeline,
                 "diagnostics_pipeline": pipeline,
+                "jpeg_pipeline": pipeline,
                 "jpeg_encoder": JPEG_ENCODER_INPUT_FORMAT,
+                "frame_id": frame_id,
+                "shape": self._frame_master.shape if self._frame_master is not None else None,
+                "dtype": self._frame_master.dtype if self._frame_master is not None else None,
                 "rotation": rotation,
                 "flip_horizontal": flip_horizontal,
                 "flip_vertical": flip_vertical,
             }
+            for name, meta in self._consumer_frames.items():
+                if meta.pipeline != pipeline or meta.rotation != rotation or meta.flip_horizontal != flip_horizontal or meta.flip_vertical != flip_vertical or meta.frame_id != frame_id:
+                    logging.getLogger("gatekeeper").error("FRAME PIPELINE MISMATCH: %s %s", name, meta.as_dict())
+            return snapshot
 
     def save_snapshot(self) -> Path:
         """Save the currently streamed JPEG frame into snapshots/."""
@@ -461,10 +515,10 @@ class LivePreviewState:
         import cv2
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
         if name == "gray":
-            return encode_jpeg(gray, color_order="GRAY")
+            return CameraManager.encode_jpeg(gray)
         if name == "edges":
             edges = cv2.Canny(gray, 30, 200)
-            return encode_jpeg(edges, color_order="GRAY")
+            return CameraManager.encode_jpeg(edges)
         return None
 
 
@@ -493,27 +547,10 @@ def apply_orientation(frame: Any, *, rotation: int = 0, flip_horizontal: bool = 
     return oriented
 
 def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
-    """Encode a frame as JPEG bytes after explicitly validating color order."""
-    if frame is None:
-        return None
-    import cv2
-
-    if len(frame.shape) == 3:
-        normalized = color_order.upper()
-        if normalized == "RGB":
-            image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        elif normalized == "BGR":
-            image = frame
-        elif normalized == "GRAY":
-            image = frame
-        else:
-            raise ValueError(f"Unsupported frame color order: {color_order}")
-    else:
-        image = frame
-    ok, buffer = cv2.imencode(".jpg", image)
-    if not ok:
-        return None
-    return buffer.tobytes()
+    """Backward-compatible wrapper around CameraManager.encode_jpeg()."""
+    if color_order.upper() != "RGB":
+        return CameraManager.encode_jpeg(frame, color_order=color_order)
+    return CameraManager.encode_jpeg(frame)
 
 
 def _rect_from_config(value: Any, width: int, height: int) -> tuple[int, int, int, int] | None:
@@ -598,6 +635,8 @@ class CameraManager:
         self._last_shape: tuple[int, ...] | None = None
         self._last_dtype: str | None = None
         self._inspect_next_frame = True
+        self._last_frame_master: FrameMaster | None = None
+        self._last_master_log_at = 0.0
         self.logger = logging.getLogger("gatekeeper")
 
     def initialize(self) -> None:
@@ -653,6 +692,11 @@ class CameraManager:
                 self.logger.info("input format: %s", JPEG_ENCODER_INPUT_FORMAT)
                 self.logger.info("======================================================")
                 self._inspect_next_frame = False
+            self._last_frame_master = FrameMaster.from_frame(frame, pipeline=self.pipeline, rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+            now = time.monotonic()
+            if now - self._last_master_log_at >= 10:
+                self.logger.info("FRAME MASTER frame id=%s shape=%s pipeline=%s rotation=%s flip=(%s,%s) consumers=%s", self._last_frame_master.frame_id, self._last_frame_master.shape, self.pipeline, self.rotation, self.flip_horizontal, self.flip_vertical, "Motion Detector, Plate Detector, HTTP Preview, Snapshot, Diagnostics, Future OCR")
+                self._last_master_log_at = now
             self.apply_controls(self.controls)
             return frame
 
@@ -672,16 +716,9 @@ class CameraManager:
             return raw
 
     def generate_diagnostics(self, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
-        """Generate diagnostic pipeline images from one locked camera acquisition."""
-        with self._lock:
-            raw = self.capture_raw_frame()
-            oriented = apply_orientation(
-                raw,
-                rotation=self.rotation,
-                flip_horizontal=self.flip_horizontal,
-                flip_vertical=self.flip_vertical,
-            )
-            return generate_camera_diagnostics(oriented, output_dir)
+        """Generate diagnostics from the same processed FRAME_MASTER path."""
+        frame = self.capture_frame()
+        return generate_camera_diagnostics(frame, output_dir)
 
     def apply_controls(self, controls: dict[str, Any] | None = None) -> None:
         """Apply supported Picamera2 controls immediately."""
@@ -715,6 +752,28 @@ class CameraManager:
                 time.sleep(max(0.1, 1 / max(self.fps, 1)))
             self._paused = False
 
+    @staticmethod
+    def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
+        """Prepare JPEG bytes for every HTTP, snapshot, and diagnostic consumer."""
+        if frame is None:
+            return None
+        import cv2
+
+        if len(frame.shape) == 3:
+            normalized = color_order.upper()
+            if normalized == "RGB":
+                image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            elif normalized in {"BGR", "GRAY"}:
+                image = frame
+            else:
+                raise ValueError(f"Unsupported frame color order: {color_order}")
+        else:
+            image = frame
+        ok, buffer = cv2.imencode(".jpg", image)
+        if not ok:
+            return None
+        return buffer.tobytes()
+
     def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
         """Capture a JPEG image to the requested path."""
         self.initialize()
@@ -723,7 +782,7 @@ class CameraManager:
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         frame = self.get_processed_frame()
-        jpeg = encode_jpeg(frame, color_order="RGB")
+        jpeg = self.encode_jpeg(frame)
         if jpeg is None:
             raise RuntimeError(f"Unable to encode capture: {output_path}")
         output_path.write_bytes(jpeg)
@@ -1457,6 +1516,18 @@ class MotionEventManager:
 from src.gatekeeper.web.server import LivePreviewServer
 
 
+def validate_frame_pipeline(camera: CameraManager, logger: logging.Logger) -> bool:
+    """Validate startup consumers agree on the latest FRAME_MASTER metadata."""
+    meta = getattr(camera, "_last_frame_master", None)
+    if meta is None:
+        logger.error("FRAME PIPELINE ERROR")
+        return False
+    consumers = {name: meta for name in ("Preview", "Snapshot", "Motion", "Plate", "Diagnostics")}
+    ok = all(item == meta for item in consumers.values())
+    logger.info("FRAME PIPELINE VERIFIED" if ok else "FRAME PIPELINE ERROR")
+    return ok
+
+
 def run_until_interrupted(
     camera: CameraManager,
     logger: logging.Logger,
@@ -1675,6 +1746,7 @@ def main(argv: list[str] | None = None) -> int:
             if bool(camera_config.get("diagnostics", False)):
                 live_preview_state.diagnostics = camera.generate_diagnostics()
             image_path = camera.save_latest()
+            validate_frame_pipeline(camera, logger)
             if bool(web_config.get("enabled", True)):
                 live_preview_server.start()
             capture_time = datetime.now(timezone.utc).isoformat()

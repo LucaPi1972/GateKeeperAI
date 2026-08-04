@@ -194,18 +194,15 @@ class LivePreviewState:
             self.events.appendleft(event)
 
     def snapshot(self) -> dict[str, Any]:
-        """Return a JSON-serializable snapshot of live preview state."""
+        """Return a JSON-serializable HTTP status snapshot."""
         with self._lock:
             return {
-                "motion_status": self.motion_state,
-                "plate_bounding_box": self.plate_bounding_box,
-                "confidence": self.confidence,
-                "resolution": self.resolution,
-                "fps": round(self.fps, 2),
                 "version": self.version,
+                "camera": CAMERA_BACKEND,
+                "motion_state": self.motion_state,
+                "fps": round(self.fps, 2),
+                "resolution": self.resolution,
                 "git_commit": self.git_commit,
-                "last_motion_event": self.last_motion_event,
-                "updated_at": self.updated_at,
             }
 
     def events_snapshot(self) -> list[dict[str, Any]]:
@@ -894,145 +891,7 @@ class MotionEventManager:
         self.image_start = None
 
 
-DASHBOARD_HTML = """<!doctype html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>GateKeeper AI Live Preview</title>
-  <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
-    header, main { max-width: 1100px; margin: auto; padding: 1rem; }
-    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
-    .card { background: #1e293b; border-radius: 12px; padding: 1rem; box-shadow: 0 8px 24px #0005; }
-    img { width: 100%; height: auto; border-radius: 8px; background: #020617; }
-    dl { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem 1rem; }
-    dt { color: #94a3b8; } dd { margin: 0; font-weight: 700; word-break: break-word; }
-    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body>
-<header><h1>GateKeeper AI Live Preview</h1></header>
-<main class=\"grid\">
-  <section class=\"card\"><h2>Live camera stream</h2><img src=\"/stream\" alt=\"Live camera stream\"></section>
-  <aside class=\"card\">
-    <h2>Status</h2><dl id=\"status\"></dl>
-    <h2>Latest plate crop</h2><img id=\"plate\" src=\"/api/latest_plate\" alt=\"Latest plate crop\">
-  </aside>
-</main>
-<script>
-async function refresh() {
-  const res = await fetch('/api/status');
-  const data = await res.json();
-  const labels = {
-    motion_status: 'Motion status', plate_bounding_box: 'Plate bounding box',
-    confidence: 'Confidence', resolution: 'Resolution', fps: 'FPS', version: 'Version',
-    git_commit: 'Git commit', last_motion_event: 'Last motion event'
-  };
-  document.getElementById('status').innerHTML = Object.entries(labels).map(([key, label]) => {
-    const value = data[key] == null ? '—' : (typeof data[key] === 'object' ? JSON.stringify(data[key]) : data[key]);
-    return `<dt>${label}</dt><dd>${value}</dd>`;
-  }).join('');
-  document.getElementById('plate').src = '/api/latest_plate?t=' + Date.now();
-}
-refresh(); setInterval(refresh, 2000);
-</script>
-</body>
-</html>"""
-
-
-class LivePreviewServer:
-    """Embedded Flask dashboard/API using CameraManager's shared latest frame."""
-
-    def __init__(
-        self,
-        *,
-        state: LivePreviewState,
-        host: str = "0.0.0.0",
-        port: int = 8080,
-        stream_fps: int = 5,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.state = state
-        self.host = host
-        self.port = port
-        self.stream_fps = stream_fps
-        self.logger = logger or logging.getLogger(__name__)
-        self._thread: threading.Thread | None = None
-        self._app: Any | None = None
-
-    def start(self) -> bool:
-        """Start the Flask development server in a daemon thread when available."""
-        try:
-            from flask import Flask, Response, jsonify
-        except ImportError:
-            self.logger.warning("Flask unavailable; HTTP live preview disabled.")
-            return False
-
-        app = Flask(__name__)
-
-        @app.get("/")
-        def dashboard():
-            return Response(DASHBOARD_HTML, mimetype="text/html")
-
-        @app.get("/health")
-        def health():
-            return jsonify({"status": "ok", "version": self.state.version})
-
-        @app.get("/api/status")
-        def status():
-            return jsonify(self.state.snapshot())
-
-        @app.get("/api/events")
-        def events():
-            return jsonify({"events": self.state.events_snapshot()})
-
-        @app.get("/api/latest_frame")
-        def latest_frame():
-            jpeg = self.state.latest_frame_jpeg()
-            if jpeg is None:
-                return Response(status=404)
-            return Response(jpeg, mimetype="image/jpeg")
-
-        @app.get("/api/latest_plate")
-        def latest_plate():
-            jpeg = self.state.latest_plate_jpeg()
-            if jpeg is None:
-                return Response(status=404)
-            return Response(jpeg, mimetype="image/jpeg")
-
-        @app.get("/stream")
-        def stream():
-            return Response(
-                self._mjpeg_frames(),
-                mimetype="multipart/x-mixed-replace; boundary=frame",
-            )
-
-        self._app = app
-        self._thread = threading.Thread(
-            target=app.run,
-            kwargs={
-                "host": self.host,
-                "port": self.port,
-                "threaded": True,
-                "use_reloader": False,
-            },
-            daemon=True,
-        )
-        self._thread.start()
-        self.logger.info(
-            "HTTP live preview started: http://%s:%s/", self.host, self.port
-        )
-        self.logger.info("HTTP live preview local URL: http://127.0.0.1:%s/", self.port)
-        return True
-
-    def _mjpeg_frames(self):
-        interval = 1 / max(self.stream_fps, 1)
-        while True:
-            jpeg = self.state.latest_frame_jpeg()
-            if jpeg is not None:
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-            time.sleep(interval)
+from src.gatekeeper.web.server import LivePreviewServer
 
 
 def run_until_interrupted(

@@ -586,13 +586,14 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
     state.record_motion_event({"type": "MOTION_START", "timestamp": "now"})
 
     status = state.snapshot()
-    assert status["motion_status"] == main.MotionEventManager.MOTION_STARTED
-    assert status["plate_bounding_box"] == (1, 2, 10, 5)
-    assert status["confidence"] == 0.77
-    assert status["resolution"] == "30x20"
-    assert status["fps"] == 5.5
-    assert status["version"] == "0.6.0"
-    assert status["git_commit"] == "abc123"
+    assert status == {
+        "version": "0.6.0",
+        "camera": main.CAMERA_BACKEND,
+        "motion_state": main.MotionEventManager.MOTION_STARTED,
+        "fps": 5.5,
+        "resolution": "30x20",
+        "git_commit": "abc123",
+    }
     assert state.events_snapshot()[0]["type"] == "MOTION_START"
     assert (
         cv2.imdecode(
@@ -624,9 +625,14 @@ def test_live_preview_server_routes_use_shared_state(monkeypatch):
     assert server.start() is True
     client = server._app.test_client()
 
-    assert client.get("/health").json == {"status": "ok", "version": "0.6.0"}
-    assert client.get("/").status_code == 200
-    assert client.get("/api/status").json["resolution"] == "30x20"
-    assert client.get("/api/events").json == {"events": []}
-    assert client.get("/api/latest_frame").mimetype == "image/jpeg"
-    assert client.get("/api/latest_plate").status_code == 404
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.get_data(as_text=True) == "OK\n"
+    index = client.get("/")
+    assert index.status_code == 200
+    assert "GateKeeper AI 0.6.0" in index.get_data(as_text=True)
+    status = client.get("/api/status").json
+    assert status["motion_state"] == main.MotionEventManager.IDLE
+    assert status["resolution"] == "30x20"
+    stream = client.get("/stream")
+    assert stream.mimetype == "multipart/x-mixed-replace"

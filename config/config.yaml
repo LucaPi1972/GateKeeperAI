@@ -16,6 +16,21 @@ display:
   show_confidence: true
   show_timestamp: true
   save_snapshot_key: s
+  show_crosshair: true
+  show_grid: true
+  show_safe_area: true
+  show_bbox: true
+  show_status: true
+  detection_area:
+    x: 164
+    y: 123
+    width: 1312
+    height: 986
+  plate_ideal_area:
+    x: 574
+    y: 493
+    width: 492
+    height: 246
 
 debug:
   enabled: true

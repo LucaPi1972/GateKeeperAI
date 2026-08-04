@@ -3,32 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.6.0</title>
+  <title>GateKeeper AI 0.6.1</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main>
-    <h1>GateKeeper AI 0.6.0</h1>
-    <section>
-      <h2>Live Stream</h2>
-      <img src="/stream" alt="Live Stream">
+  <main class="dashboard">
+    <section class="preview-card">
+      <div class="title-row">
+        <div>
+          <p class="eyebrow">HTTP Live Preview</p>
+          <h1>GateKeeper AI 0.6.1</h1>
+        </div>
+        <button id="snapshot_button" type="button">Save Snapshot</button>
+      </div>
+      <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
+      <p id="snapshot_status" class="snapshot-status" aria-live="polite"></p>
     </section>
-    <dl>
-      <dt>Motion State</dt><dd id="motion_state">UNKNOWN</dd>
-      <dt>Resolution</dt><dd id="resolution">unknown</dd>
-      <dt>FPS</dt><dd id="fps">0</dd>
-    </dl>
+    <aside class="status-card">
+      <p class="eyebrow">Calibration Status</p>
+      <dl>
+        <dt>Motion</dt><dd id="motion_state">UNKNOWN</dd>
+        <dt>Resolution</dt><dd id="resolution">unknown</dd>
+        <dt>FPS</dt><dd id="fps">0</dd>
+        <dt>Confidence</dt><dd id="confidence">n/a</dd>
+        <dt>Plate</dt><dd id="plate_found">Not detected</dd>
+        <dt>Plate Box</dt><dd id="plate_box">n/a</dd>
+        <dt>Timestamp</dt><dd id="timestamp">n/a</dd>
+      </dl>
+    </aside>
   </main>
   <script>
     async function refreshStatus() {
-      const response = await fetch('/api/status');
+      const response = await fetch('/api/frame_info');
       const status = await response.json();
-      document.getElementById('motion_state').textContent = status.motion_state;
-      document.getElementById('resolution').textContent = status.resolution;
+      document.getElementById('motion_state').textContent = status.motion;
+      document.getElementById('resolution').textContent = `${status.width ?? '?'}x${status.height ?? '?'}`;
       document.getElementById('fps').textContent = status.fps;
+      document.getElementById('confidence').textContent = status.confidence === null ? 'n/a' : Number(status.confidence).toFixed(3);
+      document.getElementById('plate_found').textContent = status.plate_found ? 'Plate detected' : 'Not detected';
+      document.getElementById('plate_box').textContent = status.plate_box || 'n/a';
+      document.getElementById('timestamp').textContent = status.timestamp || 'n/a';
     }
+    async function saveSnapshot() {
+      const label = document.getElementById('snapshot_status');
+      const response = await fetch('/api/snapshot', { method: 'POST' });
+      const payload = await response.json();
+      label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
+    }
+    document.getElementById('snapshot_button').addEventListener('click', saveSnapshot);
     refreshStatus();
-    setInterval(refreshStatus, 2000);
+    setInterval(refreshStatus, 1000);
   </script>
 </body>
 </html>

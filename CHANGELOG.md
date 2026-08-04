@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6
+
+- Add a diagnostic camera pipeline inspector for startup, reconfiguration, first-frame runtime path logging, and the `/api/pipeline` runtime endpoint.
+- Add motion detector frame-size safety reset before `cv2.absdiff()` to avoid crashes after orientation changes.
+- Document all frame acquisition, conversion, orientation, and JPEG encoding call sites in `docs/CAMERA_PIPELINE_AUDIT.md`.
+
 ## 0.6.5
 
 - Stabilize the shared camera processing path so diagnostics, live preview, streams, snapshots, motion, and plate detection consume the same processed frame.

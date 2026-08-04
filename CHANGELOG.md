@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4
+
+- Fix camera orientation order so rotation and flips are applied immediately after acquisition and before motion detection, plate detection, preview, snapshots, diagnostics, and JPEG encoding.
+
 ## 0.6.3
 
 - Add camera orientation calibration, corrected RGB/BGR logging, configurable plate detector filters, debug MJPEG endpoints, calibration panel metadata, and overlay snapshots.

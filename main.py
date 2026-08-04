@@ -154,7 +154,7 @@ def apply_color_pipeline(frame: Any, pipeline: str = "rgb") -> Any:
 
 
 def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
-    """Return the four camera diagnostic frame variants."""
+    """Return the four camera diagnostic frame variants from an oriented RGB frame."""
     import cv2
     return {
         "frame_raw.jpg": (raw_frame, "raw"),
@@ -165,7 +165,7 @@ def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
 
 
 def generate_camera_diagnostics(raw_frame: Any, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
-    """Save one raw frame in all supported color interpretations."""
+    """Save one oriented frame in all supported color interpretations."""
     import cv2
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict[str, str]] = {}
@@ -335,6 +335,18 @@ class LivePreviewState:
         save_config(config, self.config_path)
         if self.camera_manager is not None:
             self.camera_manager.reconfigure(camera_config)
+            try:
+                raw_frame = self.camera_manager.capture_raw_frame()
+            except Exception:
+                raw_frame = None
+            if raw_frame is not None:
+                oriented_frame = apply_orientation(
+                    raw_frame,
+                    rotation=int(camera_config.get("rotation", 0)),
+                    flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
+                    flip_vertical=bool(camera_config.get("flip_vertical", False)),
+                )
+                self.diagnostics = generate_camera_diagnostics(oriented_frame, self.diagnostics_dir)
         self.camera_pipeline = str(camera_config.get("pipeline", self.camera_pipeline))
         self.camera_orientation = {
             "rotation": int(camera_config.get("rotation", 0)),
@@ -532,7 +544,13 @@ class CameraManager:
         raw = self._camera.capture_array()
         self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
         self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
-        return apply_orientation(apply_color_pipeline(raw, self.pipeline), rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+        oriented = apply_orientation(
+            raw,
+            rotation=self.rotation,
+            flip_horizontal=self.flip_horizontal,
+            flip_vertical=self.flip_vertical,
+        )
+        return apply_color_pipeline(oriented, self.pipeline)
 
     def capture_raw_frame(self) -> Any:
         """Capture exactly what Picamera2 returns."""
@@ -1413,7 +1431,14 @@ def main(argv: list[str] | None = None) -> int:
             plate_detector.initialize()
             camera.health_check()
             if bool(camera_config.get("diagnostics", False)):
-                live_preview_state.diagnostics = generate_camera_diagnostics(camera.capture_raw_frame())
+                live_preview_state.diagnostics = generate_camera_diagnostics(
+                    apply_orientation(
+                        camera.capture_raw_frame(),
+                        rotation=int(camera_config.get("rotation", 0)),
+                        flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
+                        flip_vertical=bool(camera_config.get("flip_vertical", False)),
+                    )
+                )
             image_path = camera.save_latest()
             if bool(web_config.get("enabled", True)):
                 live_preview_server.start()

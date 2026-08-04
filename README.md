@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.3 adds a lightweight embedded HTTP preview server for Raspberry Pi OS Lite with MJPEG streaming and status endpoints.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.4 adds a lightweight embedded HTTP preview server for Raspberry Pi OS Lite with MJPEG streaming and status endpoints.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.6.3
+ GateKeeper AI v0.6.4
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -109,7 +109,7 @@ Event behavior:
 
 ### Display & Calibration mode
 
-Release 0.6.3 replaces the previous web dashboard proposal with a local OpenCV display subsystem implemented by `DisplayManager`. Configure it in `config/config.yaml`:
+Release 0.6.4 replaces the previous web dashboard proposal with a local OpenCV display subsystem implemented by `DisplayManager`. Configure it in `config/config.yaml`:
 
 ```yaml
 display:
@@ -142,7 +142,7 @@ The display window supports these shortcuts:
 
 ### Debug Vision mode
 
-Release 0.6.3 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
+Release 0.6.4 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
 
 ```yaml
 debug:
@@ -177,7 +177,7 @@ Annotated frames are saved only when motion starts or when a plate candidate is 
 
 ### Plate Detector
 
-Release 0.6.3 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
+Release 0.6.4 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
 
 The detector is implemented in `src/gatekeeper/plate_detector.py` and uses a lightweight OpenCV pipeline:
 
@@ -231,9 +231,9 @@ Validate configuration and print the startup banner without opening the camera:
 python main.py --check
 ```
 
-## Release 0.6.3 camera calibration and detector tuning
+## Release 0.6.4 camera calibration and detector tuning
 
-Release 0.6.3 is limited to camera calibration and plate detector tuning. It does not add OCR, whitelist logic, or database schema changes.
+Release 0.6.4 is limited to camera calibration and plate detector tuning. It does not add OCR, whitelist logic, or database schema changes.
 
 ### Camera rotation and orientation
 
@@ -289,9 +289,9 @@ Each endpoint returns MJPEG and leaves the normal HTTP Preview `/stream` behavio
 4. Tune confidence, aspect ratio, area, rectangularity, rotation, and border margin until rejected candidates are red and the selected candidate is green.
 5. Use `/api/snapshot` or the display snapshot shortcut to save `snapshot_<timestamp>.jpg` files with overlays for comparison.
 
-## Release 0.6.3 camera diagnostics
+## Release 0.6.4 camera diagnostics
 
-Release 0.6.3 is limited to camera calibration and diagnostics. It does not implement OCR, does not change the database schema, and does not alter motion-detection logic.
+Release 0.6.4 is limited to camera calibration and diagnostics. It does not implement OCR, does not change the database schema, and does not alter motion-detection logic.
 
 ### Camera Diagnostics
 

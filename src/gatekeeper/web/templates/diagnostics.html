@@ -10,7 +10,7 @@
   <main class="dashboard diagnostics-page">
     <section class="preview-card">
       <p class="eyebrow">Camera Diagnostics</p>
-      <h1>Pipeline Selection & Color Calibration</h1>
+      <h1>Orientation & Camera Diagnostics</h1>
       <div id="diagnostic_images" class="diagnostic-grid"></div>
     </section>
     <aside class="status-card">
@@ -36,7 +36,7 @@
 <script>
 const names = [['frame_raw.jpg','raw'],['frame_rgb.jpg','rgb'],['frame_bgr.jpg','bgr'],['frame_swap_rb.jpg','swap_rb']];
 function controls(){const c={}; for (const id of ['AwbEnable','AeEnable']) c[id]=document.getElementById(id).checked; for (const id of ['Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) { const v=document.getElementById(id).value; if (v !== '') c[id]=Number(v); } return c;}
-async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); document.getElementById('camera_status').textContent=JSON.stringify(await r.json(), null, 2); }
+async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); document.getElementById('camera_status').textContent=JSON.stringify(await r.json(), null, 2); render(); }
 function render(){ const root=document.getElementById('diagnostic_images'); root.innerHTML=''; for (const [file,pipeline] of names){ const card=document.createElement('article'); card.className='diagnostic-card'; card.innerHTML=`<h2>${file}</h2><p>Pipeline: ${pipeline}</p><img src="/diagnostics/${file}?t=${Date.now()}" alt="${file}"><button type="button">Use this pipeline</button>`; card.querySelector('button').onclick=()=>apply({pipeline}); root.appendChild(card); }}
 for (const id of ['rotation','flip_horizontal','flip_vertical']) document.addEventListener('change', e=>{ if(e.target.id===id) apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked}); });
 document.getElementById('save_camera').onclick=()=>apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked, controls:controls()});

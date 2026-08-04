@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.5
+
+- Stabilize the shared camera processing path so diagnostics, live preview, streams, snapshots, motion, and plate detection consume the same processed frame.
+- Safely reconfigure camera pipeline, rotation, flips, and controls at runtime without crashing the stream.
+
 ## 0.6.4
 
 - Fix camera orientation order so rotation and flips are applied immediately after acquisition and before motion detection, plate detection, preview, snapshots, diagnostics, and JPEG encoding.

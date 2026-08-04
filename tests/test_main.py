@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.6.0"
+    assert main.get_version() == "0.6.1"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.6.0" in output
+    assert "GateKeeper AI v0.6.1" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -466,6 +466,13 @@ def test_default_config_contains_display_settings():
         "show_confidence": True,
         "show_timestamp": True,
         "save_snapshot_key": "s",
+        "show_crosshair": True,
+        "show_grid": True,
+        "show_safe_area": True,
+        "show_bbox": True,
+        "show_status": True,
+        "detection_area": {"x": 164, "y": 123, "width": 1312, "height": 986},
+        "plate_ideal_area": {"x": 574, "y": 493, "width": 492, "height": 246},
     }
 
 
@@ -491,7 +498,7 @@ def test_display_manager_draws_green_plate_overlay_and_snapshot(tmp_path, monkey
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 180, 3), dtype=np.uint8)
     detection = main.PlateDetection((25, 35, 80, 20), 0.85, object())
-    display = main.DisplayManager(enabled=False, version="0.6.0", git_commit="abc123")
+    display = main.DisplayManager(enabled=False, version="0.6.1", git_commit="abc123")
     monkeypatch.setattr(
         "src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots"
     )
@@ -573,7 +580,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
     frame = np.zeros((20, 30, 3), dtype=np.uint8)
     crop = np.zeros((5, 10, 3), dtype=np.uint8)
     detection = main.PlateDetection((1, 2, 10, 5), 0.77, object())
-    state = main.LivePreviewState(version="0.6.0", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
 
     state.update_frame(
         frame,
@@ -587,7 +594,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 
     status = state.snapshot()
     assert status == {
-        "version": "0.6.0",
+        "version": "0.6.1",
         "camera": main.CAMERA_BACKEND,
         "motion_state": main.MotionEventManager.MOTION_STARTED,
         "fps": 5.5,
@@ -612,7 +619,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 def test_live_preview_server_routes_use_shared_state(monkeypatch):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.0", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
     state.update_frame(
         np.zeros((20, 30, 3), dtype=np.uint8),
         motion_state=main.MotionEventManager.IDLE,
@@ -630,9 +637,90 @@ def test_live_preview_server_routes_use_shared_state(monkeypatch):
     assert health.get_data(as_text=True) == "OK\n"
     index = client.get("/")
     assert index.status_code == 200
-    assert "GateKeeper AI 0.6.0" in index.get_data(as_text=True)
+    assert "GateKeeper AI 0.6.1" in index.get_data(as_text=True)
     status = client.get("/api/status").json
     assert status["motion_state"] == main.MotionEventManager.IDLE
     assert status["resolution"] == "30x20"
     stream = client.get("/stream")
     assert stream.mimetype == "multipart/x-mixed-replace"
+
+
+def test_encode_jpeg_preserves_rgb_red_channel():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+    frame[:, :] = (255, 0, 0)
+
+    jpeg = main.encode_jpeg(frame, color_order="RGB")
+    decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert decoded[..., 2].mean() > 200
+    assert decoded[..., 0].mean() < 50
+
+
+def test_live_preview_overlay_crosshair_grid_bbox_and_frame_info_snapshot(tmp_path, monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((90, 120, 3), dtype=np.uint8)
+    detection = main.PlateDetection((10, 20, 30, 15), 0.88, object())
+    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state.display_config = {
+        "show_crosshair": True,
+        "show_grid": True,
+        "show_safe_area": True,
+        "show_bbox": True,
+        "show_status": True,
+        "detection_area": {"x": 5, "y": 6, "width": 40, "height": 30},
+        "plate_ideal_area": {"x": 50, "y": 40, "width": 30, "height": 20},
+    }
+    monkeypatch.setattr(main, "SNAPSHOT_DIR", tmp_path / "snapshots")
+
+    state.update_frame(
+        frame,
+        motion_state=main.MotionEventManager.MOTION_STARTED,
+        fps=12.345,
+        resolution="120x90",
+        plate_detection=detection,
+    )
+    info = state.frame_info()
+    output_path = state.save_snapshot()
+    decoded = cv2.imdecode(np.frombuffer(state.latest_frame_jpeg(), dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert info["width"] == 120
+    assert info["height"] == 90
+    assert info["fps"] == 12.35
+    assert info["motion"] == main.MotionEventManager.MOTION_STARTED
+    assert info["confidence"] == 0.88
+    assert info["plate_found"] is True
+    assert info["plate_box"] == (10, 20, 30, 15)
+    assert output_path.is_file()
+    assert output_path.name.startswith("snapshot_")
+    assert decoded[45, 60, 1] > 0
+    assert decoded[30, 40].any()
+    assert decoded[20, 10, 1] > 0
+
+
+def test_live_preview_server_frame_info_and_snapshot_route(monkeypatch, tmp_path):
+    pytest.importorskip("flask")
+    np = pytest.importorskip("numpy")
+    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state.update_frame(
+        np.zeros((20, 30, 3), dtype=np.uint8),
+        motion_state=main.MotionEventManager.IDLE,
+        fps=1.0,
+        resolution="30x20",
+    )
+    monkeypatch.setattr(main, "SNAPSHOT_DIR", tmp_path / "snapshots")
+    server = main.LivePreviewServer(state=state)
+    monkeypatch.setattr(main.threading.Thread, "start", lambda self: None)
+    server.start()
+    client = server._app.test_client()
+
+    frame_info = client.get("/api/frame_info")
+    snapshot = client.post("/api/snapshot")
+
+    assert frame_info.status_code == 200
+    assert frame_info.json["width"] == 30
+    assert frame_info.json["plate_found"] is False
+    assert snapshot.status_code == 200
+    assert (tmp_path / "snapshots" / snapshot.json["filename"]).is_file()

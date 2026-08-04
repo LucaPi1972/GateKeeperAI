@@ -22,6 +22,18 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     def status():
         return jsonify(state.snapshot())
 
+    @app.get("/api/frame_info")
+    def frame_info():
+        return jsonify(state.frame_info())
+
+    @app.post("/api/snapshot")
+    def snapshot():
+        try:
+            path = state.save_snapshot()
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({"path": str(path), "filename": path.name})
+
     @app.get("/stream")
     def stream():
         return Response(

@@ -34,6 +34,7 @@ VERSION_FILE = PROJECT_ROOT / "VERSION"
 LOG_DIR = PROJECT_ROOT / "logs"
 IMAGE_DIR = PROJECT_ROOT / "images"
 DEBUG_DIR = PROJECT_ROOT / "debug"
+SNAPSHOT_DIR = PROJECT_ROOT / "snapshots"
 LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
@@ -70,35 +71,38 @@ def get_opencv_version() -> str:
     return str(cv2.__version__)
 
 
+def _parse_minimal_value(value: str) -> Any:
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def _load_minimal_yaml(contents: str) -> dict[str, Any]:
     """Load the simple bundled YAML config when PyYAML is unavailable."""
     data: dict[str, Any] = {}
-    current_section: str | None = None
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, data)]
 
     for raw_line in contents.splitlines():
-        line = raw_line.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
-        if not line.startswith(" ") and line.endswith(":"):
-            current_section = line[:-1].strip()
-            data[current_section] = {}
-            continue
-        if current_section and ":" in line:
-            key, value = line.split(":", 1)
-            section = data.setdefault(current_section, {})
-            if isinstance(section, dict):
-                value = value.strip()
-                if value.lower() in {"true", "false"}:
-                    section[key.strip()] = value.lower() == "true"
-                else:
-                    try:
-                        section[key.strip()] = int(value)
-                    except ValueError:
-                        section[key.strip()] = value
-            continue
-        raise ValueError(
-            "Unsupported YAML syntax; install PyYAML for full YAML support."
-        )
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+        if ":" not in line:
+            raise ValueError("Unsupported YAML syntax; install PyYAML for full YAML support.")
+        key, raw_value = line.split(":", 1)
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        value = raw_value.strip()
+        if value == "":
+            child: dict[str, Any] = {}
+            parent[key.strip()] = child
+            stack.append((indent, child))
+        else:
+            parent[key.strip()] = _parse_minimal_value(value)
 
     return data
 
@@ -159,6 +163,9 @@ class LivePreviewState:
         self.last_motion_event: dict[str, Any] | None = None
         self.events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self.updated_at: str | None = None
+        self.width: int | None = None
+        self.height: int | None = None
+        self.display_config: dict[str, Any] = {}
 
     def update_frame(
         self,
@@ -171,21 +178,38 @@ class LivePreviewState:
         plate_crop: Any | None = None,
     ) -> None:
         """Store the latest captured frame and metadata for web consumers."""
-        encoded_frame = encode_jpeg(frame)
-        encoded_plate = encode_jpeg(plate_crop) if plate_crop is not None else None
         now = datetime.now(timezone.utc).isoformat()
+        annotated_frame = render_live_preview_frame(
+            frame,
+            version=self.version,
+            git_commit=self.git_commit,
+            motion_state=motion_state,
+            fps=fps,
+            resolution=resolution,
+            timestamp=now,
+            confidence=plate_detection.confidence if plate_detection is not None else None,
+            plate_detection=plate_detection,
+            display_config=self.display_config,
+        )
+        encoded_frame = encode_jpeg(annotated_frame, color_order="RGB")
+        encoded_plate = encode_jpeg(plate_crop, color_order="RGB") if plate_crop is not None else None
+        height = int(frame.shape[0]) if hasattr(frame, "shape") else None
+        width = int(frame.shape[1]) if hasattr(frame, "shape") and len(frame.shape) > 1 else None
         with self._lock:
-            self._frame = frame.copy() if hasattr(frame, "copy") else frame
+            self._frame = annotated_frame.copy() if hasattr(annotated_frame, "copy") else annotated_frame
             self._frame_jpeg = encoded_frame
+            self.width = width
+            self.height = height
             if encoded_plate is not None:
                 self._plate_jpeg = encoded_plate
             self.motion_state = motion_state
             self.fps = fps
             self.resolution = resolution
             self.updated_at = now
-            if plate_detection is not None:
-                self.plate_bounding_box = plate_detection.bounding_box
-                self.confidence = plate_detection.confidence
+            self.plate_bounding_box = (
+                plate_detection.bounding_box if plate_detection is not None else None
+            )
+            self.confidence = plate_detection.confidence if plate_detection is not None else None
 
     def record_motion_event(self, event: dict[str, Any]) -> None:
         """Store a motion event summary for the dashboard and API."""
@@ -205,6 +229,31 @@ class LivePreviewState:
                 "git_commit": self.git_commit,
             }
 
+    def frame_info(self) -> dict[str, Any]:
+        """Return calibration metadata for the latest streamed frame."""
+        with self._lock:
+            return {
+                "width": self.width,
+                "height": self.height,
+                "fps": round(self.fps, 2),
+                "motion": self.motion_state,
+                "confidence": self.confidence,
+                "plate_found": self.plate_bounding_box is not None,
+                "plate_box": self.plate_bounding_box,
+                "timestamp": self.updated_at,
+            }
+
+    def save_snapshot(self) -> Path:
+        """Save the currently streamed JPEG frame into snapshots/."""
+        jpeg = self.latest_frame_jpeg()
+        if jpeg is None:
+            raise RuntimeError("No live preview frame is available to snapshot.")
+        timestamp = datetime.now(timezone.utc).isoformat().replace(":", "").replace("+", "Z")
+        output_path = SNAPSHOT_DIR / f"snapshot_{timestamp}.jpg"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(jpeg)
+        return output_path
+
     def events_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self.events)
@@ -218,17 +267,79 @@ class LivePreviewState:
             return self._plate_jpeg
 
 
-def encode_jpeg(frame: Any) -> bytes | None:
-    """Encode an RGB frame as JPEG bytes without opening camera resources."""
+def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
+    """Encode a frame as JPEG bytes after explicitly validating color order."""
     if frame is None:
         return None
     import cv2
 
-    image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
+    if len(frame.shape) == 3:
+        normalized = color_order.upper()
+        if normalized == "RGB":
+            image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        elif normalized == "BGR":
+            image = frame
+        else:
+            raise ValueError(f"Unsupported frame color order: {color_order}")
+    else:
+        image = frame
     ok, buffer = cv2.imencode(".jpg", image)
     if not ok:
         return None
     return buffer.tobytes()
+
+
+def _rect_from_config(value: Any, width: int, height: int) -> tuple[int, int, int, int] | None:
+    if not isinstance(value, dict):
+        return None
+    x = int(value.get("x", 0)); y = int(value.get("y", 0))
+    w = int(value.get("width", width)); h = int(value.get("height", height))
+    return max(0, x), max(0, y), max(1, w), max(1, h)
+
+
+def render_live_preview_frame(
+    frame: Any, *, version: str, git_commit: str, motion_state: str, fps: float,
+    resolution: str, timestamp: str, confidence: float | None,
+    plate_detection: PlateDetection | None, display_config: dict[str, Any] | None = None,
+) -> Any:
+    """Draw HTTP calibration overlays directly onto a copy of an RGB frame."""
+    import cv2
+
+    cfg = display_config or {}
+    output = frame.copy() if hasattr(frame, "copy") else frame
+    if not hasattr(output, "shape") or len(output.shape) < 2:
+        return output
+    height, width = output.shape[:2]
+    overlay = output.copy()
+    green = (0, 255, 0)
+    if cfg.get("show_grid", True):
+        for x in (width // 3, 2 * width // 3):
+            cv2.line(output, (x, 0), (x, height), (80, 120, 80), 1)
+        for y in (height // 3, 2 * height // 3):
+            cv2.line(output, (0, y), (width, y), (80, 120, 80), 1)
+    if cfg.get("show_safe_area", True):
+        for key, color in (("detection_area", (0, 255, 255)), ("plate_ideal_area", (255, 200, 0))):
+            rect = _rect_from_config(cfg.get(key), width, height)
+            if rect:
+                x, y, w, h = rect; cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
+    if cfg.get("show_crosshair", True):
+        cx, cy = width // 2, height // 2
+        cv2.line(overlay, (cx, 0), (cx, height), green, 1)
+        cv2.line(overlay, (0, cy), (width, cy), green, 1)
+        cv2.addWeighted(overlay, 0.45, output, 0.55, 0, output)
+    if cfg.get("show_bbox", True) and plate_detection is not None:
+        x, y, w, h = plate_detection.bounding_box
+        cv2.rectangle(output, (x, y), (x + w, y + h), green, 2)
+        cv2.putText(output, f"{plate_detection.confidence:.3f} ({x},{y},{w},{h})", (x, max(18, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, green, 1, cv2.LINE_AA)
+    if cfg.get("show_status", True):
+        top = [f"GateKeeper AI v{version}", f"Git: {git_commit}", f"FPS: {fps:.2f}", f"Resolution: {resolution}", f"Timestamp: {timestamp}", f"Motion: {motion_state}"]
+        for i, line in enumerate(top):
+            cv2.putText(output, line, (10, 22 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, green, 1, cv2.LINE_AA)
+        bottom = [f"Confidence: {confidence:.3f}" if confidence is not None else "Confidence: n/a", "Plate detected" if plate_detection is not None else "Not detected"]
+        for i, line in enumerate(reversed(bottom)):
+            size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)[0]
+            cv2.putText(output, line, (max(10, width - size[0] - 10), height - 12 - i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, green, 1, cv2.LINE_AA)
+    return output
 
 
 class CameraManager:
@@ -1058,6 +1169,7 @@ def main(argv: list[str] | None = None) -> int:
         logger=logger,
     )
     live_preview_state = LivePreviewState(version=version, git_commit=git_commit)
+    live_preview_state.display_config = display_config
     live_preview_server = LivePreviewServer(
         state=live_preview_state,
         host=str(web_config.get("host", "0.0.0.0")),

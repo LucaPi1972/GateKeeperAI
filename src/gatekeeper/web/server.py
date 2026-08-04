@@ -84,6 +84,19 @@ class LivePreviewServer:
                 payload = json.dumps(self.state.snapshot()).encode("utf-8")
                 start_response("200 OK", [("Content-Type", "application/json")])
                 return [payload]
+            if path == "/api/frame_info":
+                payload = json.dumps(self.state.frame_info()).encode("utf-8")
+                start_response("200 OK", [("Content-Type", "application/json")])
+                return [payload]
+            if path == "/api/snapshot" and environ.get("REQUEST_METHOD") == "POST":
+                try:
+                    snapshot = self.state.save_snapshot()
+                    payload = json.dumps({"path": str(snapshot), "filename": snapshot.name}).encode("utf-8")
+                    start_response("200 OK", [("Content-Type", "application/json")])
+                except RuntimeError as exc:
+                    payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                    start_response("409 Conflict", [("Content-Type", "application/json")])
+                return [payload]
             if path == "/static/style.css":
                 start_response("200 OK", [("Content-Type", "text/css")])
                 return [css.encode("utf-8")]

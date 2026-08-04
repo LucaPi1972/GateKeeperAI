@@ -30,3 +30,9 @@ motion:
   threshold: 25
   min_area: 1000
   end_delay_seconds: 2
+
+web:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+  stream_fps: 5

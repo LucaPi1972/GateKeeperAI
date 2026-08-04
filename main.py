@@ -13,10 +13,12 @@ import subprocess
 import sys
 import time
 import uuid
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from collections import deque
 
 from src.gatekeeper.display_manager import DisplayManager
 from src.gatekeeper.plate_detector import PlateDetection, PlateDetector
@@ -135,6 +137,101 @@ def configure_logging(config: dict[str, Any], verbose: bool = False) -> None:
         ],
         force=True,
     )
+
+
+class LivePreviewState:
+    """Thread-safe state shared by the camera loop and HTTP live preview."""
+
+    def __init__(self, *, version: str, git_commit: str, max_events: int = 20) -> None:
+        self.version = version
+        self.git_commit = git_commit
+        self._lock = threading.Lock()
+        self._frame: Any | None = None
+        self._frame_jpeg: bytes | None = None
+        self._plate_jpeg: bytes | None = None
+        self.motion_state = (
+            MotionEventManager.IDLE if "MotionEventManager" in globals() else "IDLE"
+        )
+        self.plate_bounding_box: tuple[int, int, int, int] | None = None
+        self.confidence: float | None = None
+        self.resolution = "unknown"
+        self.fps = 0.0
+        self.last_motion_event: dict[str, Any] | None = None
+        self.events: deque[dict[str, Any]] = deque(maxlen=max_events)
+        self.updated_at: str | None = None
+
+    def update_frame(
+        self,
+        frame: Any,
+        *,
+        motion_state: str,
+        fps: float,
+        resolution: str,
+        plate_detection: PlateDetection | None = None,
+        plate_crop: Any | None = None,
+    ) -> None:
+        """Store the latest captured frame and metadata for web consumers."""
+        encoded_frame = encode_jpeg(frame)
+        encoded_plate = encode_jpeg(plate_crop) if plate_crop is not None else None
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._frame = frame.copy() if hasattr(frame, "copy") else frame
+            self._frame_jpeg = encoded_frame
+            if encoded_plate is not None:
+                self._plate_jpeg = encoded_plate
+            self.motion_state = motion_state
+            self.fps = fps
+            self.resolution = resolution
+            self.updated_at = now
+            if plate_detection is not None:
+                self.plate_bounding_box = plate_detection.bounding_box
+                self.confidence = plate_detection.confidence
+
+    def record_motion_event(self, event: dict[str, Any]) -> None:
+        """Store a motion event summary for the dashboard and API."""
+        with self._lock:
+            self.last_motion_event = event
+            self.events.appendleft(event)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a JSON-serializable snapshot of live preview state."""
+        with self._lock:
+            return {
+                "motion_status": self.motion_state,
+                "plate_bounding_box": self.plate_bounding_box,
+                "confidence": self.confidence,
+                "resolution": self.resolution,
+                "fps": round(self.fps, 2),
+                "version": self.version,
+                "git_commit": self.git_commit,
+                "last_motion_event": self.last_motion_event,
+                "updated_at": self.updated_at,
+            }
+
+    def events_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self.events)
+
+    def latest_frame_jpeg(self) -> bytes | None:
+        with self._lock:
+            return self._frame_jpeg
+
+    def latest_plate_jpeg(self) -> bytes | None:
+        with self._lock:
+            return self._plate_jpeg
+
+
+def encode_jpeg(frame: Any) -> bytes | None:
+    """Encode an RGB frame as JPEG bytes without opening camera resources."""
+    if frame is None:
+        return None
+    import cv2
+
+    image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
+    ok, buffer = cv2.imencode(".jpg", image)
+    if not ok:
+        return None
+    return buffer.tobytes()
 
 
 class CameraManager:
@@ -613,6 +710,7 @@ class MotionEventManager:
         end_delay_seconds: float = 2,
         plate_detector: PlateDetector | None = None,
         debug_vision: DebugVision | None = None,
+        live_preview_state: LivePreviewState | None = None,
     ) -> None:
         self.detector = detector
         self.database = database
@@ -620,6 +718,8 @@ class MotionEventManager:
         self.end_delay_seconds = end_delay_seconds
         self.plate_detector = plate_detector
         self.debug_vision = debug_vision
+        self.live_preview_state = live_preview_state
+        self.last_plate_crop: Any | None = None
         self.last_plate_detection: PlateDetection | None = None
         self.state = self.IDLE
         self.event_id: str | None = None
@@ -657,6 +757,16 @@ class MotionEventManager:
             frame, motion_image_path(now.isoformat(), "START")
         )
         self.logger.info("Motion started")
+        if self.live_preview_state is not None:
+            self.live_preview_state.record_motion_event(
+                {
+                    "type": "MOTION_START",
+                    "timestamp": now.isoformat(),
+                    "event_id": self.event_id,
+                    "image_start": str(self.image_start),
+                    "max_contour_area": self.max_contour_area,
+                }
+            )
         self._detect_plate(frame, now)
         if self.debug_vision is not None and self.debug_vision.save_annotated_frames:
             annotated = self.debug_vision.annotate(
@@ -727,6 +837,7 @@ class MotionEventManager:
         crop = (
             self.plate_detector.crop(frame, detection) if self.plate_detector else frame
         )
+        self.last_plate_crop = crop
         output_path.parent.mkdir(parents=True, exist_ok=True)
         image = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR) if len(crop.shape) == 3 else crop
         if not cv2.imwrite(str(output_path), image):
@@ -746,6 +857,22 @@ class MotionEventManager:
         self.logger.info("Motion finished")
         self.logger.info("Duration")
         self.logger.info("Max contour area")
+        if self.live_preview_state is not None:
+            self.live_preview_state.record_motion_event(
+                {
+                    "type": "MOTION_END",
+                    "timestamp": now.isoformat(),
+                    "event_id": self.event_id,
+                    "start_time": (
+                        self.start_time.isoformat() if self.start_time else None
+                    ),
+                    "end_time": now.isoformat(),
+                    "duration": duration,
+                    "max_contour_area": self.max_contour_area,
+                    "image_start": str(self.image_start) if self.image_start else None,
+                    "image_end": str(image_end),
+                }
+            )
         if self.database is not None:
             self.database.insert_event(
                 now.isoformat(),
@@ -767,6 +894,147 @@ class MotionEventManager:
         self.image_start = None
 
 
+DASHBOARD_HTML = """<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>GateKeeper AI Live Preview</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+    header, main { max-width: 1100px; margin: auto; padding: 1rem; }
+    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 1rem; box-shadow: 0 8px 24px #0005; }
+    img { width: 100%; height: auto; border-radius: 8px; background: #020617; }
+    dl { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem 1rem; }
+    dt { color: #94a3b8; } dd { margin: 0; font-weight: 700; word-break: break-word; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header><h1>GateKeeper AI Live Preview</h1></header>
+<main class=\"grid\">
+  <section class=\"card\"><h2>Live camera stream</h2><img src=\"/stream\" alt=\"Live camera stream\"></section>
+  <aside class=\"card\">
+    <h2>Status</h2><dl id=\"status\"></dl>
+    <h2>Latest plate crop</h2><img id=\"plate\" src=\"/api/latest_plate\" alt=\"Latest plate crop\">
+  </aside>
+</main>
+<script>
+async function refresh() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  const labels = {
+    motion_status: 'Motion status', plate_bounding_box: 'Plate bounding box',
+    confidence: 'Confidence', resolution: 'Resolution', fps: 'FPS', version: 'Version',
+    git_commit: 'Git commit', last_motion_event: 'Last motion event'
+  };
+  document.getElementById('status').innerHTML = Object.entries(labels).map(([key, label]) => {
+    const value = data[key] == null ? '—' : (typeof data[key] === 'object' ? JSON.stringify(data[key]) : data[key]);
+    return `<dt>${label}</dt><dd>${value}</dd>`;
+  }).join('');
+  document.getElementById('plate').src = '/api/latest_plate?t=' + Date.now();
+}
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>"""
+
+
+class LivePreviewServer:
+    """Embedded Flask dashboard/API using CameraManager's shared latest frame."""
+
+    def __init__(
+        self,
+        *,
+        state: LivePreviewState,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        stream_fps: int = 5,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.state = state
+        self.host = host
+        self.port = port
+        self.stream_fps = stream_fps
+        self.logger = logger or logging.getLogger(__name__)
+        self._thread: threading.Thread | None = None
+        self._app: Any | None = None
+
+    def start(self) -> bool:
+        """Start the Flask development server in a daemon thread when available."""
+        try:
+            from flask import Flask, Response, jsonify
+        except ImportError:
+            self.logger.warning("Flask unavailable; HTTP live preview disabled.")
+            return False
+
+        app = Flask(__name__)
+
+        @app.get("/")
+        def dashboard():
+            return Response(DASHBOARD_HTML, mimetype="text/html")
+
+        @app.get("/health")
+        def health():
+            return jsonify({"status": "ok", "version": self.state.version})
+
+        @app.get("/api/status")
+        def status():
+            return jsonify(self.state.snapshot())
+
+        @app.get("/api/events")
+        def events():
+            return jsonify({"events": self.state.events_snapshot()})
+
+        @app.get("/api/latest_frame")
+        def latest_frame():
+            jpeg = self.state.latest_frame_jpeg()
+            if jpeg is None:
+                return Response(status=404)
+            return Response(jpeg, mimetype="image/jpeg")
+
+        @app.get("/api/latest_plate")
+        def latest_plate():
+            jpeg = self.state.latest_plate_jpeg()
+            if jpeg is None:
+                return Response(status=404)
+            return Response(jpeg, mimetype="image/jpeg")
+
+        @app.get("/stream")
+        def stream():
+            return Response(
+                self._mjpeg_frames(),
+                mimetype="multipart/x-mixed-replace; boundary=frame",
+            )
+
+        self._app = app
+        self._thread = threading.Thread(
+            target=app.run,
+            kwargs={
+                "host": self.host,
+                "port": self.port,
+                "threaded": True,
+                "use_reloader": False,
+            },
+            daemon=True,
+        )
+        self._thread.start()
+        self.logger.info(
+            "HTTP live preview started: http://%s:%s/", self.host, self.port
+        )
+        self.logger.info("HTTP live preview local URL: http://127.0.0.1:%s/", self.port)
+        return True
+
+    def _mjpeg_frames(self):
+        interval = 1 / max(self.stream_fps, 1)
+        while True:
+            jpeg = self.state.latest_frame_jpeg()
+            if jpeg is not None:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+            time.sleep(interval)
+
+
 def run_until_interrupted(
     camera: CameraManager,
     logger: logging.Logger,
@@ -781,6 +1049,7 @@ def run_until_interrupted(
     plate_detector: PlateDetector | None = None,
     debug_vision: DebugVision | None = None,
     display_manager: DisplayManager | None = None,
+    live_preview_state: LivePreviewState | None = None,
 ) -> None:
     """Capture frames continuously until shutdown, detecting motion when enabled."""
     running = True
@@ -806,6 +1075,7 @@ def run_until_interrupted(
         end_delay_seconds,
         plate_detector,
         debug_vision,
+        live_preview_state,
     )
     camera_resolution = camera.get_info().get("resolution", "unknown")
     last_frame_started = time.monotonic()
@@ -819,6 +1089,15 @@ def run_until_interrupted(
             now = datetime.now(timezone.utc)
             frame_interval = max(loop_started - last_frame_started, 0.000001)
             measured_fps = 1 / frame_interval
+            if live_preview_state is not None:
+                live_preview_state.update_frame(
+                    frame,
+                    motion_state=motion_event_manager.state,
+                    fps=measured_fps,
+                    resolution=camera_resolution,
+                    plate_detection=motion_event_manager.last_plate_detection,
+                    plate_crop=motion_event_manager.last_plate_crop,
+                )
             if display_manager is not None and display_manager.requested_enabled:
                 display_manager.update_frame(
                     frame,
@@ -897,6 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
     end_delay_seconds = float(motion_config.get("end_delay_seconds", 2))
     plate_detector = PlateDetector()
     debug_config = config.get("debug", {})
+    web_config = config.get("web", {})
     display_config = config.get("display", {})
     display_manager = DisplayManager(
         enabled=bool(display_config.get("enabled", True)),
@@ -918,6 +1198,14 @@ def main(argv: list[str] | None = None) -> int:
         save_annotated_frames=bool(debug_config.get("save_annotated_frames", False)),
         logger=logger,
     )
+    live_preview_state = LivePreviewState(version=version, git_commit=git_commit)
+    live_preview_server = LivePreviewServer(
+        state=live_preview_state,
+        host=str(web_config.get("host", "0.0.0.0")),
+        port=int(web_config.get("port", 8080)),
+        stream_fps=int(web_config.get("stream_fps", 5)),
+        logger=logger,
+    )
 
     try:
         print_startup_banner(version, git_commit)
@@ -930,6 +1218,8 @@ def main(argv: list[str] | None = None) -> int:
             plate_detector.initialize()
             camera.health_check()
             image_path = camera.save_latest()
+            if bool(web_config.get("enabled", True)):
+                live_preview_server.start()
             capture_time = datetime.now(timezone.utc).isoformat()
             log_startup_metadata(
                 logger, version, git_commit, camera.get_info(), capture_time, image_path
@@ -946,6 +1236,11 @@ def main(argv: list[str] | None = None) -> int:
                 plate_detector=plate_detector,
                 debug_vision=debug_vision,
                 display_manager=display_manager,
+                live_preview_state=(
+                    live_preview_state
+                    if bool(web_config.get("enabled", True))
+                    else None
+                ),
             )
     except Exception:
         camera.stop()

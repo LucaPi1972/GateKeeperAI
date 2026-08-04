@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 
 def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     """Register HTTP preview, MJPEG stream, health, and status routes."""
-    from flask import Response, jsonify, render_template
+    from flask import Response, jsonify, render_template, request, send_from_directory
 
     @app.get("/")
     def index():
         return render_template("index.html")
+
+    @app.get("/diagnostics")
+    def diagnostics():
+        return render_template("diagnostics.html")
 
     @app.get("/health")
     def health():
@@ -33,6 +38,27 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
         return jsonify({"path": str(path), "filename": path.name})
+
+    @app.get("/api/diagnostics")
+    def diagnostics_status():
+        return jsonify(state.frame_info())
+
+    @app.post("/api/camera")
+    def update_camera():
+        payload = request.get_json(silent=True) or {}
+        updates: dict[str, Any] = {}
+        if "pipeline" in payload:
+            updates["pipeline"] = payload["pipeline"]
+        for key in ("rotation", "flip_horizontal", "flip_vertical"):
+            if key in payload:
+                updates[key] = payload[key]
+        if "controls" in payload and isinstance(payload["controls"], dict):
+            updates["controls"] = payload["controls"]
+        return jsonify(state.update_camera_config(updates))
+
+    @app.get("/diagnostics/<path:filename>")
+    def diagnostic_image(filename: str):
+        return send_from_directory(Path(state.diagnostics_dir), filename)
 
     @app.get("/stream")
     def stream():

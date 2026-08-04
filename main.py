@@ -35,11 +35,13 @@ LOG_DIR = PROJECT_ROOT / "logs"
 IMAGE_DIR = PROJECT_ROOT / "images"
 DEBUG_DIR = PROJECT_ROOT / "debug"
 SNAPSHOT_DIR = PROJECT_ROOT / "snapshots"
+DIAGNOSTICS_DIR = PROJECT_ROOT / "diagnostics"
 LATEST_IMAGE = IMAGE_DIR / "latest.jpg"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
 DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
+PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
 
 
 def get_version() -> str:
@@ -127,6 +129,54 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     return loaded
 
 
+def save_config(config: dict[str, Any], path: Path = DEFAULT_CONFIG) -> None:
+    """Persist application configuration without changing the schema."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to persist configuration.")
+    with path.open("w", encoding="utf-8") as config_file:
+        yaml.safe_dump(config, config_file, sort_keys=False)
+
+
+def apply_color_pipeline(frame: Any, pipeline: str = "rgb") -> Any:
+    """Adapt a Picamera2 frame to the configured color pipeline."""
+    if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 3:
+        return frame
+    import cv2
+    normalized = str(pipeline or "rgb").lower()
+    if normalized in {"raw", "rgb"}:
+        return frame
+    if normalized == "bgr":
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    if normalized == "swap_rb":
+        return frame[..., ::-1].copy()
+    raise ValueError(f"Unsupported camera pipeline: {pipeline}")
+
+
+def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
+    """Return the four camera diagnostic frame variants."""
+    import cv2
+    return {
+        "frame_raw.jpg": (raw_frame, "raw"),
+        "frame_rgb.jpg": (raw_frame, "rgb"),
+        "frame_bgr.jpg": (cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR), "bgr"),
+        "frame_swap_rb.jpg": (raw_frame[..., ::-1].copy(), "swap_rb"),
+    }
+
+
+def generate_camera_diagnostics(raw_frame: Any, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
+    """Save one raw frame in all supported color interpretations."""
+    import cv2
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results: dict[str, dict[str, str]] = {}
+    for filename, (frame, pipeline) in diagnostic_frames(raw_frame).items():
+        path = output_dir / filename
+        if not cv2.imwrite(str(path), frame):
+            raise RuntimeError(f"Unable to save diagnostic image: {path}")
+        results[filename] = {"path": str(path), "pipeline": pipeline}
+    return results
+
+
 def configure_logging(config: dict[str, Any], verbose: bool = False) -> None:
     """Configure console and file logging."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -170,6 +220,12 @@ class LivePreviewState:
         self.height: int | None = None
         self.display_config: dict[str, Any] = {}
         self.camera_orientation: dict[str, Any] = {}
+        self.camera_pipeline = "rgb"
+        self.camera_controls: dict[str, Any] = {}
+        self.diagnostics: dict[str, Any] = {}
+        self.diagnostics_dir = DIAGNOSTICS_DIR
+        self.config_path: Path = DEFAULT_CONFIG
+        self.camera_manager: CameraManager | None = None
         self.detector_thresholds: dict[str, Any] = {}
         self.candidates: list[Any] = []
 
@@ -255,6 +311,9 @@ class LivePreviewState:
                 "rejected_candidates": len([c for c in self.candidates if not getattr(c, "valid", False)]),
                 "thresholds": self.detector_thresholds,
                 "camera_orientation": self.camera_orientation,
+                "camera_pipeline": self.camera_pipeline,
+                "camera_controls": self.camera_controls,
+                "diagnostics": self.diagnostics,
             }
 
     def save_snapshot(self) -> Path:
@@ -267,6 +326,23 @@ class LivePreviewState:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(jpeg)
         return output_path
+
+    def update_camera_config(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Persist camera updates and apply them to the live CameraManager."""
+        config = load_config(self.config_path)
+        camera_config = config.setdefault("camera", {})
+        camera_config.update(updates)
+        save_config(config, self.config_path)
+        if self.camera_manager is not None:
+            self.camera_manager.reconfigure(camera_config)
+        self.camera_pipeline = str(camera_config.get("pipeline", self.camera_pipeline))
+        self.camera_orientation = {
+            "rotation": int(camera_config.get("rotation", 0)),
+            "flip_horizontal": bool(camera_config.get("flip_horizontal", False)),
+            "flip_vertical": bool(camera_config.get("flip_vertical", False)),
+        }
+        self.camera_controls = dict(camera_config.get("controls", {}) or {})
+        return {"camera": camera_config}
 
     def events_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -412,15 +488,20 @@ def render_live_preview_frame(
 class CameraManager:
     """Manage the Raspberry Pi camera through Picamera2."""
 
-    def __init__(self, width: int, height: int, fps: int, rotation: int = 0, flip_horizontal: bool = False, flip_vertical: bool = False) -> None:
+    def __init__(self, width: int, height: int, fps: int, rotation: int = 0, flip_horizontal: bool = False, flip_vertical: bool = False, pipeline: str = "rgb", controls: dict[str, Any] | None = None) -> None:
         self.width = width
         self.height = height
         self.fps = fps
         self.rotation = rotation
         self.flip_horizontal = flip_horizontal
         self.flip_vertical = flip_vertical
+        self.pipeline = pipeline
+        self.controls = controls or {}
         self._camera: Any | None = None
         self._pixel_format = "RGB888"
+        self._frame_format = "RGB"
+        self._last_shape: tuple[int, ...] | None = None
+        self._last_dtype: str | None = None
 
     def initialize(self) -> None:
         """Initialize and start Picamera2 if needed."""
@@ -435,6 +516,7 @@ class CameraManager:
         )
         self._camera.configure(configuration)
         self._camera.start()
+        self.apply_controls(self.controls)
         time.sleep(max(0.1, 1 / max(self.fps, 1)))
 
     def health_check(self) -> bool:
@@ -447,7 +529,34 @@ class CameraManager:
         self.initialize()
         if self._camera is None:
             raise RuntimeError("Picamera2 is not initialized.")
-        return apply_orientation(self._camera.capture_array(), rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+        raw = self._camera.capture_array()
+        self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
+        self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
+        return apply_orientation(apply_color_pipeline(raw, self.pipeline), rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
+
+    def capture_raw_frame(self) -> Any:
+        """Capture exactly what Picamera2 returns."""
+        self.initialize()
+        if self._camera is None:
+            raise RuntimeError("Picamera2 is not initialized.")
+        raw = self._camera.capture_array()
+        self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
+        self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
+        return raw
+
+    def apply_controls(self, controls: dict[str, Any] | None = None) -> None:
+        """Apply supported Picamera2 controls immediately."""
+        self.controls = dict(controls or {})
+        if self._camera is not None and self.controls:
+            self._camera.set_controls(self.controls)
+
+    def reconfigure(self, camera_config: dict[str, Any]) -> None:
+        """Apply live camera pipeline, orientation, and controls."""
+        self.rotation = int(camera_config.get("rotation", self.rotation))
+        self.flip_horizontal = bool(camera_config.get("flip_horizontal", self.flip_horizontal))
+        self.flip_vertical = bool(camera_config.get("flip_vertical", self.flip_vertical))
+        self.pipeline = str(camera_config.get("pipeline", self.pipeline))
+        self.apply_controls(dict(camera_config.get("controls", self.controls) or {}))
 
     def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
         """Capture a JPEG image to the requested path."""
@@ -479,8 +588,12 @@ class CameraManager:
             "backend": CAMERA_BACKEND,
             "resolution": f"{self.width}x{self.height}",
             "pixel_format": self._pixel_format,
+            "sensor": properties.get("Sensor", "unknown") if self._camera is not None else "unknown",
             "camera_model": model,
-            "frame_format": "RGB",
+            "frame_format": self._frame_format,
+            "shape": self._last_shape,
+            "dtype": self._last_dtype,
+            "color_pipeline": self.pipeline,
             "jpeg_encoder_format": "BGR",
             "orientation": {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical},
         }
@@ -713,9 +826,18 @@ def log_startup_metadata(
     logger.info("Python version: %s", platform.python_version())
     logger.info("Platform: %s", platform.system())
     logger.info("Camera backend: %s", camera_info["backend"])
+    logger.info("Camera model: %s", camera_info.get("camera_model"))
+    logger.info("Sensor: %s", camera_info.get("sensor"))
     logger.info("Camera resolution: %s", camera_info["resolution"])
     logger.info("Camera pixel format: %s", camera_info.get("pixel_format"))
     logger.info("Frame format: %s", camera_info.get("frame_format"))
+    logger.info("Shape: %s", camera_info.get("shape"))
+    logger.info("dtype: %s", camera_info.get("dtype"))
+    logger.info("Color pipeline: %s", camera_info.get("color_pipeline"))
+    orientation = camera_info.get("orientation", {})
+    logger.info("Rotation: %s", orientation.get("rotation"))
+    logger.info("Flip H: %s", orientation.get("flip_horizontal"))
+    logger.info("Flip V: %s", orientation.get("flip_vertical"))
     logger.info("JPEG encoder format: %s", camera_info.get("jpeg_encoder_format"))
     logger.info("Capture time: %s", capture_time)
     logger.info("Image path: %s", image_path)
@@ -1219,6 +1341,8 @@ def main(argv: list[str] | None = None) -> int:
         rotation=int(camera_config.get("rotation", 0)),
         flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
         flip_vertical=bool(camera_config.get("flip_vertical", False)),
+        pipeline=str(camera_config.get("pipeline", "rgb")),
+        controls=dict(camera_config.get("controls", {}) or {}),
     )
     database = EventDatabase()
     motion_config = config.get("motion", {})
@@ -1264,7 +1388,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     live_preview_state = LivePreviewState(version=version, git_commit=git_commit)
     live_preview_state.display_config = {**display_config, "debug_candidates": bool(config.get("plate_detector", {}).get("debug", False))}
+    live_preview_state.config_path = args.config
+    live_preview_state.camera_manager = camera
+    live_preview_state.camera_pipeline = str(camera_config.get("pipeline", "rgb"))
     live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
+    live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
     live_preview_server = LivePreviewServer(
         state=live_preview_state,
@@ -1284,6 +1412,8 @@ def main(argv: list[str] | None = None) -> int:
             database.initialize()
             plate_detector.initialize()
             camera.health_check()
+            if bool(camera_config.get("diagnostics", False)):
+                live_preview_state.diagnostics = generate_camera_diagnostics(camera.capture_raw_frame())
             image_path = camera.save_latest()
             if bool(web_config.get("enabled", True)):
                 live_preview_server.start()

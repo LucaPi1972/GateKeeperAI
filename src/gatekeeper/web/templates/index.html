@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.6.1</title>
+  <title>GateKeeper AI 0.6.2</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="title-row">
         <div>
           <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.6.1</h1>
+          <h1>GateKeeper AI 0.6.2</h1>
         </div>
         <button id="snapshot_button" type="button">Save Snapshot</button>
       </div>
@@ -29,6 +29,11 @@
         <dt>Plate</dt><dd id="plate_found">Not detected</dd>
         <dt>Plate Box</dt><dd id="plate_box">n/a</dd>
         <dt>Timestamp</dt><dd id="timestamp">n/a</dd>
+        <dt>Candidates</dt><dd id="candidate_count">0</dd>
+        <dt>Selected</dt><dd id="selected_candidate">n/a</dd>
+        <dt>Rejected</dt><dd id="rejected_candidates">0</dd>
+        <dt>Thresholds</dt><dd id="thresholds">n/a</dd>
+        <dt>Orientation</dt><dd id="camera_orientation">n/a</dd>
       </dl>
     </aside>
   </main>
@@ -43,6 +48,11 @@
       document.getElementById('plate_found').textContent = status.plate_found ? 'Plate detected' : 'Not detected';
       document.getElementById('plate_box').textContent = status.plate_box || 'n/a';
       document.getElementById('timestamp').textContent = status.timestamp || 'n/a';
+      document.getElementById('candidate_count').textContent = status.candidate_count ?? 0;
+      document.getElementById('selected_candidate').textContent = status.selected_candidate || 'n/a';
+      document.getElementById('rejected_candidates').textContent = status.rejected_candidates ?? 0;
+      document.getElementById('thresholds').textContent = JSON.stringify(status.thresholds || {});
+      document.getElementById('camera_orientation').textContent = JSON.stringify(status.camera_orientation || {});
     }
     async function saveSnapshot() {
       const label = document.getElementById('snapshot_status');

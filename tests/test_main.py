@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.6.1"
+    assert main.get_version() == "0.6.2"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.6.1" in output
+    assert "GateKeeper AI v0.6.2" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -114,7 +114,14 @@ def test_startup_banner_contains_release_version(capsys):
 def test_default_config_contains_motion_detection_settings():
     config = main.load_config()
 
-    assert config["camera"]["fps"] == 1
+    assert config["camera"] == {
+        "width": 1640,
+        "height": 1232,
+        "fps": 1,
+        "rotation": 180,
+        "flip_horizontal": False,
+        "flip_vertical": False,
+    }
     assert config["motion"] == {
         "enabled": True,
         "threshold": 25,
@@ -476,6 +483,22 @@ def test_default_config_contains_display_settings():
     }
 
 
+def test_default_config_contains_plate_detector_thresholds():
+    config = main.load_config()
+
+    assert config["plate_detector"] == {
+        "debug": True,
+        "confidence_threshold": 0.70,
+        "aspect_ratio_min": 3.5,
+        "aspect_ratio_max": 6.5,
+        "min_area": 2500,
+        "max_area": 70000,
+        "min_rectangularity": 0.80,
+        "max_rotation": 15,
+        "border_margin": 20,
+    }
+
+
 def test_display_manager_disables_when_headless(monkeypatch, caplog):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -498,7 +521,7 @@ def test_display_manager_draws_green_plate_overlay_and_snapshot(tmp_path, monkey
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 180, 3), dtype=np.uint8)
     detection = main.PlateDetection((25, 35, 80, 20), 0.85, object())
-    display = main.DisplayManager(enabled=False, version="0.6.1", git_commit="abc123")
+    display = main.DisplayManager(enabled=False, version="0.6.2", git_commit="abc123")
     monkeypatch.setattr(
         "src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots"
     )
@@ -580,7 +603,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
     frame = np.zeros((20, 30, 3), dtype=np.uint8)
     crop = np.zeros((5, 10, 3), dtype=np.uint8)
     detection = main.PlateDetection((1, 2, 10, 5), 0.77, object())
-    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.2", git_commit="abc123")
 
     state.update_frame(
         frame,
@@ -594,7 +617,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 
     status = state.snapshot()
     assert status == {
-        "version": "0.6.1",
+        "version": "0.6.2",
         "camera": main.CAMERA_BACKEND,
         "motion_state": main.MotionEventManager.MOTION_STARTED,
         "fps": 5.5,
@@ -619,7 +642,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 def test_live_preview_server_routes_use_shared_state(monkeypatch):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.2", git_commit="abc123")
     state.update_frame(
         np.zeros((20, 30, 3), dtype=np.uint8),
         motion_state=main.MotionEventManager.IDLE,
@@ -637,7 +660,7 @@ def test_live_preview_server_routes_use_shared_state(monkeypatch):
     assert health.get_data(as_text=True) == "OK\n"
     index = client.get("/")
     assert index.status_code == 200
-    assert "GateKeeper AI 0.6.1" in index.get_data(as_text=True)
+    assert "GateKeeper AI 0.6.2" in index.get_data(as_text=True)
     status = client.get("/api/status").json
     assert status["motion_state"] == main.MotionEventManager.IDLE
     assert status["resolution"] == "30x20"
@@ -663,7 +686,7 @@ def test_live_preview_overlay_crosshair_grid_bbox_and_frame_info_snapshot(tmp_pa
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 120, 3), dtype=np.uint8)
     detection = main.PlateDetection((10, 20, 30, 15), 0.88, object())
-    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.2", git_commit="abc123")
     state.display_config = {
         "show_crosshair": True,
         "show_grid": True,
@@ -703,7 +726,7 @@ def test_live_preview_overlay_crosshair_grid_bbox_and_frame_info_snapshot(tmp_pa
 def test_live_preview_server_frame_info_and_snapshot_route(monkeypatch, tmp_path):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.1", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.2", git_commit="abc123")
     state.update_frame(
         np.zeros((20, 30, 3), dtype=np.uint8),
         motion_state=main.MotionEventManager.IDLE,
@@ -724,3 +747,72 @@ def test_live_preview_server_frame_info_and_snapshot_route(monkeypatch, tmp_path
     assert frame_info.json["plate_found"] is False
     assert snapshot.status_code == 200
     assert (tmp_path / "snapshots" / snapshot.json["filename"]).is_file()
+
+
+def test_apply_orientation_rotation_and_flips():
+    np = pytest.importorskip("numpy")
+    frame = np.arange(12, dtype=np.uint8).reshape((2, 2, 3))
+
+    rotated = main.apply_orientation(frame, rotation=180)
+    flipped = main.apply_orientation(frame, flip_horizontal=True)
+    vertical = main.apply_orientation(frame, flip_vertical=True)
+
+    assert rotated[0, 0].tolist() == frame[1, 1].tolist()
+    assert flipped[0, 0].tolist() == frame[0, 1].tolist()
+    assert vertical[0, 0].tolist() == frame[1, 0].tolist()
+
+
+def test_encode_jpeg_bgr_does_not_double_convert_blue():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+    frame[:, :] = (255, 0, 0)  # BGR blue
+
+    jpeg = main.encode_jpeg(frame, color_order="BGR")
+    decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert decoded[..., 0].mean() > 200
+    assert decoded[..., 2].mean() < 50
+
+
+def test_plate_detector_filters_rejected_and_selects_candidate():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    detector = main.PlateDetector(
+        min_area=100,
+        max_area=20000,
+        min_aspect_ratio=3.0,
+        max_aspect_ratio=7.0,
+        confidence_threshold=0.05,
+        min_rectangularity=0.5,
+        border_margin=5,
+        debug=True,
+    )
+    frame = np.zeros((160, 320, 3), dtype=np.uint8)
+    cv2.rectangle(frame, (40, 60), (240, 100), (255, 255, 255), 2)
+    cv2.rectangle(frame, (1, 1), (80, 40), (255, 255, 255), 2)
+
+    detection = detector.detect(frame)
+
+    assert detection is not None
+    assert detection.confidence >= detector.confidence_threshold
+    assert detection.bounding_box[0] >= 35
+    assert detector.last_candidates
+    assert any(not candidate.valid for candidate in detector.last_candidates)
+    assert any(candidate.valid for candidate in detector.last_candidates)
+
+
+def test_live_preview_server_debug_endpoints(monkeypatch):
+    pytest.importorskip("flask")
+    np = pytest.importorskip("numpy")
+    state = main.LivePreviewState(version="0.6.2", git_commit="abc123")
+    state.update_frame(np.zeros((20, 30, 3), dtype=np.uint8), motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20")
+    server = main.LivePreviewServer(state=state)
+    monkeypatch.setattr(main.threading.Thread, "start", lambda self: None)
+    server.start()
+    client = server._app.test_client()
+
+    for endpoint in ("/debug/gray", "/debug/edges", "/debug/contours", "/debug/candidates", "/debug/final"):
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        assert response.mimetype == "multipart/x-mixed-replace"

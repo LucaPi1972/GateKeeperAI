@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GateKeeper AI 0.6.0</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <h1>GateKeeper AI 0.6.0</h1>
+    <section>
+      <h2>Live Stream</h2>
+      <img src="/stream" alt="Live Stream">
+    </section>
+    <dl>
+      <dt>Motion State</dt><dd id="motion_state">UNKNOWN</dd>
+      <dt>Resolution</dt><dd id="resolution">unknown</dd>
+      <dt>FPS</dt><dd id="fps">0</dd>
+    </dl>
+  </main>
+  <script>
+    async function refreshStatus() {
+      const response = await fetch('/api/status');
+      const status = await response.json();
+      document.getElementById('motion_state').textContent = status.motion_state;
+      document.getElementById('resolution').textContent = status.resolution;
+      document.getElementById('fps').textContent = status.fps;
+    }
+    refreshStatus();
+    setInterval(refreshStatus, 2000);
+  </script>
+</body>
+</html>

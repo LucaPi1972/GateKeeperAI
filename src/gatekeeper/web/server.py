@@ -100,6 +100,9 @@ class LivePreviewServer:
             if path == "/static/style.css":
                 start_response("200 OK", [("Content-Type", "text/css")])
                 return [css.encode("utf-8")]
+            if path.startswith("/debug/"):
+                start_response("200 OK", [("Content-Type", "multipart/x-mixed-replace; boundary=frame")])
+                return self._mjpeg_frames(path.rsplit("/", 1)[-1])
             if path == "/stream":
                 start_response(
                     "200 OK",
@@ -120,12 +123,12 @@ class LivePreviewServer:
         with make_server(self.host, self.port, app) as httpd:
             httpd.serve_forever()
 
-    def _mjpeg_frames(self):
+    def _mjpeg_frames(self, debug_name: str | None = None):
         import time
 
         interval = 1 / max(self.stream_fps, 1)
         while True:
-            jpeg = self.state.latest_frame_jpeg()
+            jpeg = self.state.debug_jpeg(debug_name) if debug_name else self.state.latest_frame_jpeg()
             if jpeg is not None:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
             time.sleep(interval)

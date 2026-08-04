@@ -5,6 +5,9 @@ camera:
   width: 1640
   height: 1232
   fps: 1
+  rotation: 180
+  flip_horizontal: false
+  flip_vertical: false
 
 display:
   enabled: true
@@ -31,6 +34,17 @@ display:
     y: 493
     width: 492
     height: 246
+
+plate_detector:
+  debug: true
+  confidence_threshold: 0.70
+  aspect_ratio_min: 3.5
+  aspect_ratio_max: 6.5
+  min_area: 2500
+  max_area: 70000
+  min_rectangularity: 0.80
+  max_rotation: 15
+  border_margin: 20
 
 debug:
   enabled: true

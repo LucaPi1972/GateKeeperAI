@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2
+
+- Add camera orientation calibration, corrected RGB/BGR logging, configurable plate detector filters, debug MJPEG endpoints, calibration panel metadata, and overlay snapshots.
+
+
 ## 0.5.2
 
 - Add Display & Calibration local OpenCV preview with overlays, fullscreen control, snapshots, keyboard shortcuts, and automatic headless fallback.

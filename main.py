@@ -77,7 +77,10 @@ def _parse_minimal_value(value: str) -> Any:
     try:
         return int(value)
     except ValueError:
-        return value
+        try:
+            return float(value)
+        except ValueError:
+            return value
 
 
 def _load_minimal_yaml(contents: str) -> dict[str, Any]:
@@ -166,6 +169,9 @@ class LivePreviewState:
         self.width: int | None = None
         self.height: int | None = None
         self.display_config: dict[str, Any] = {}
+        self.camera_orientation: dict[str, Any] = {}
+        self.detector_thresholds: dict[str, Any] = {}
+        self.candidates: list[Any] = []
 
     def update_frame(
         self,
@@ -195,6 +201,7 @@ class LivePreviewState:
         encoded_plate = encode_jpeg(plate_crop, color_order="RGB") if plate_crop is not None else None
         height = int(frame.shape[0]) if hasattr(frame, "shape") else None
         width = int(frame.shape[1]) if hasattr(frame, "shape") and len(frame.shape) > 1 else None
+        candidates = list(getattr(plate_detection, "candidates", []) or [])
         with self._lock:
             self._frame = annotated_frame.copy() if hasattr(annotated_frame, "copy") else annotated_frame
             self._frame_jpeg = encoded_frame
@@ -210,6 +217,8 @@ class LivePreviewState:
                 plate_detection.bounding_box if plate_detection is not None else None
             )
             self.confidence = plate_detection.confidence if plate_detection is not None else None
+            if candidates:
+                self.candidates = candidates
 
     def record_motion_event(self, event: dict[str, Any]) -> None:
         """Store a motion event summary for the dashboard and API."""
@@ -241,6 +250,11 @@ class LivePreviewState:
                 "plate_found": self.plate_bounding_box is not None,
                 "plate_box": self.plate_bounding_box,
                 "timestamp": self.updated_at,
+                "candidate_count": len(self.candidates),
+                "selected_candidate": self.plate_bounding_box,
+                "rejected_candidates": len([c for c in self.candidates if not getattr(c, "valid", False)]),
+                "thresholds": self.detector_thresholds,
+                "camera_orientation": self.camera_orientation,
             }
 
     def save_snapshot(self) -> Path:
@@ -266,6 +280,48 @@ class LivePreviewState:
         with self._lock:
             return self._plate_jpeg
 
+    def debug_jpeg(self, name: str) -> bytes | None:
+        with self._lock:
+            if name == "final":
+                return self._frame_jpeg
+            if name in {"candidates", "contours"}:
+                return self._frame_jpeg
+            frame = self._frame
+        if frame is None:
+            return None
+        import cv2
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
+        if name == "gray":
+            return encode_jpeg(gray, color_order="GRAY")
+        if name == "edges":
+            edges = cv2.Canny(gray, 30, 200)
+            return encode_jpeg(edges, color_order="GRAY")
+        return None
+
+
+
+def apply_orientation(frame: Any, *, rotation: int = 0, flip_horizontal: bool = False, flip_vertical: bool = False) -> Any:
+    """Apply configured camera orientation immediately after frame acquisition."""
+    if frame is None or not hasattr(frame, "shape"):
+        return frame
+    import cv2
+    oriented = frame
+    normalized = rotation % 360
+    if normalized == 90:
+        oriented = cv2.rotate(oriented, cv2.ROTATE_90_CLOCKWISE)
+    elif normalized == 180:
+        oriented = cv2.rotate(oriented, cv2.ROTATE_180)
+    elif normalized == 270:
+        oriented = cv2.rotate(oriented, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif normalized != 0:
+        raise ValueError(f"Unsupported camera rotation: {rotation}")
+    if flip_horizontal and flip_vertical:
+        oriented = cv2.flip(oriented, -1)
+    elif flip_horizontal:
+        oriented = cv2.flip(oriented, 1)
+    elif flip_vertical:
+        oriented = cv2.flip(oriented, 0)
+    return oriented
 
 def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
     """Encode a frame as JPEG bytes after explicitly validating color order."""
@@ -278,6 +334,8 @@ def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
         if normalized == "RGB":
             image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         elif normalized == "BGR":
+            image = frame
+        elif normalized == "GRAY":
             image = frame
         else:
             raise ValueError(f"Unsupported frame color order: {color_order}")
@@ -327,7 +385,16 @@ def render_live_preview_frame(
         cv2.line(overlay, (cx, 0), (cx, height), green, 1)
         cv2.line(overlay, (0, cy), (width, cy), green, 1)
         cv2.addWeighted(overlay, 0.45, output, 0.55, 0, output)
-    if cfg.get("show_bbox", True) and plate_detection is not None:
+    candidates = list(getattr(plate_detection, "candidates", []) or [])
+    if cfg.get("debug_candidates", False) and candidates:
+        selected_box = plate_detection.bounding_box if plate_detection is not None else None
+        for candidate in candidates:
+            x, y, w, h = candidate.bounding_box
+            color = green if candidate.bounding_box == selected_box else ((255, 255, 0) if candidate.valid else (255, 0, 0))
+            cv2.rectangle(output, (x, y), (x + w, y + h), color, 2)
+            label = f"S:{candidate.confidence:.2f} AR:{candidate.aspect_ratio:.2f} A:{candidate.area:.0f} R:{candidate.rectangularity:.2f}"
+            cv2.putText(output, label, (x, max(18, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    elif cfg.get("show_bbox", True) and plate_detection is not None:
         x, y, w, h = plate_detection.bounding_box
         cv2.rectangle(output, (x, y), (x + w, y + h), green, 2)
         cv2.putText(output, f"{plate_detection.confidence:.3f} ({x},{y},{w},{h})", (x, max(18, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, green, 1, cv2.LINE_AA)
@@ -345,10 +412,13 @@ def render_live_preview_frame(
 class CameraManager:
     """Manage the Raspberry Pi camera through Picamera2."""
 
-    def __init__(self, width: int, height: int, fps: int) -> None:
+    def __init__(self, width: int, height: int, fps: int, rotation: int = 0, flip_horizontal: bool = False, flip_vertical: bool = False) -> None:
         self.width = width
         self.height = height
         self.fps = fps
+        self.rotation = rotation
+        self.flip_horizontal = flip_horizontal
+        self.flip_vertical = flip_vertical
         self._camera: Any | None = None
         self._pixel_format = "RGB888"
 
@@ -377,7 +447,7 @@ class CameraManager:
         self.initialize()
         if self._camera is None:
             raise RuntimeError("Picamera2 is not initialized.")
-        return self._camera.capture_array()
+        return apply_orientation(self._camera.capture_array(), rotation=self.rotation, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
 
     def capture(self, output_path: Path = LATEST_IMAGE) -> Path:
         """Capture a JPEG image to the requested path."""
@@ -386,7 +456,11 @@ class CameraManager:
             raise RuntimeError("Picamera2 is not initialized.")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._camera.capture_file(str(output_path))
+        frame = self.capture_frame()
+        import cv2
+        image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
+        if not cv2.imwrite(str(output_path), image):
+            raise RuntimeError(f"Unable to save capture: {output_path}")
         if not output_path.is_file() or output_path.stat().st_size <= 0:
             raise RuntimeError(f"Captured image is empty or missing: {output_path}")
         return output_path
@@ -406,6 +480,9 @@ class CameraManager:
             "resolution": f"{self.width}x{self.height}",
             "pixel_format": self._pixel_format,
             "camera_model": model,
+            "frame_format": "RGB",
+            "jpeg_encoder_format": "BGR",
+            "orientation": {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical},
         }
 
     def stop(self) -> None:
@@ -637,6 +714,9 @@ def log_startup_metadata(
     logger.info("Platform: %s", platform.system())
     logger.info("Camera backend: %s", camera_info["backend"])
     logger.info("Camera resolution: %s", camera_info["resolution"])
+    logger.info("Camera pixel format: %s", camera_info.get("pixel_format"))
+    logger.info("Frame format: %s", camera_info.get("frame_format"))
+    logger.info("JPEG encoder format: %s", camera_info.get("jpeg_encoder_format"))
     logger.info("Capture time: %s", capture_time)
     logger.info("Image path: %s", image_path)
     logger.info("Image size: %d bytes", image_path.stat().st_size)
@@ -1136,6 +1216,9 @@ def main(argv: list[str] | None = None) -> int:
         width=int(camera_config.get("width", 1640)),
         height=int(camera_config.get("height", 1232)),
         fps=fps,
+        rotation=int(camera_config.get("rotation", 0)),
+        flip_horizontal=bool(camera_config.get("flip_horizontal", False)),
+        flip_vertical=bool(camera_config.get("flip_vertical", False)),
     )
     database = EventDatabase()
     motion_config = config.get("motion", {})
@@ -1144,7 +1227,18 @@ def main(argv: list[str] | None = None) -> int:
         threshold=int(motion_config.get("threshold", 25)),
     )
     end_delay_seconds = float(motion_config.get("end_delay_seconds", 2))
-    plate_detector = PlateDetector()
+    plate_config = config.get("plate_detector", {})
+    plate_detector = PlateDetector(
+        min_aspect_ratio=float(plate_config.get("aspect_ratio_min", 3.5)),
+        max_aspect_ratio=float(plate_config.get("aspect_ratio_max", 6.5)),
+        min_area=float(plate_config.get("min_area", 2500)),
+        max_area=float(plate_config.get("max_area", 70000)),
+        confidence_threshold=float(plate_config.get("confidence_threshold", 0.70)),
+        min_rectangularity=float(plate_config.get("min_rectangularity", 0.80)),
+        max_rotation=float(plate_config.get("max_rotation", 15)),
+        border_margin=int(plate_config.get("border_margin", 20)),
+        debug=bool(plate_config.get("debug", False)),
+    )
     debug_config = config.get("debug", {})
     web_config = config.get("web", {})
     display_config = config.get("display", {})
@@ -1169,7 +1263,9 @@ def main(argv: list[str] | None = None) -> int:
         logger=logger,
     )
     live_preview_state = LivePreviewState(version=version, git_commit=git_commit)
-    live_preview_state.display_config = display_config
+    live_preview_state.display_config = {**display_config, "debug_candidates": bool(config.get("plate_detector", {}).get("debug", False))}
+    live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
+    live_preview_state.detector_thresholds = config.get("plate_detector", {})
     live_preview_server = LivePreviewServer(
         state=live_preview_state,
         host=str(web_config.get("host", "0.0.0.0")),

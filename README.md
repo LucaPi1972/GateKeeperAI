@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.1 adds a lightweight embedded HTTP preview server for Raspberry Pi OS Lite with MJPEG streaming and status endpoints.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.2 adds a lightweight embedded HTTP preview server for Raspberry Pi OS Lite with MJPEG streaming and status endpoints.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.6.1
+ GateKeeper AI v0.6.2
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -109,7 +109,7 @@ Event behavior:
 
 ### Display & Calibration mode
 
-Release 0.6.1 replaces the previous web dashboard proposal with a local OpenCV display subsystem implemented by `DisplayManager`. Configure it in `config/config.yaml`:
+Release 0.6.2 replaces the previous web dashboard proposal with a local OpenCV display subsystem implemented by `DisplayManager`. Configure it in `config/config.yaml`:
 
 ```yaml
 display:
@@ -142,7 +142,7 @@ The display window supports these shortcuts:
 
 ### Debug Vision mode
 
-Release 0.6.1 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
+Release 0.6.2 adds Debug Vision mode for plate-detector development. Configure it in `config/config.yaml`:
 
 ```yaml
 debug:
@@ -177,7 +177,7 @@ Annotated frames are saved only when motion starts or when a plate candidate is 
 
 ### Plate Detector
 
-Release 0.6.1 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
+Release 0.6.2 introduces the first plate detector. It runs when `MotionEventManager` enters `MOTION_STARTED`, so plate analysis happens once at the beginning of a motion event and does not perform OCR.
 
 The detector is implemented in `src/gatekeeper/plate_detector.py` and uses a lightweight OpenCV pipeline:
 
@@ -230,3 +230,61 @@ Validate configuration and print the startup banner without opening the camera:
 ```bash
 python main.py --check
 ```
+
+## Release 0.6.2 camera calibration and detector tuning
+
+Release 0.6.2 is limited to camera calibration and plate detector tuning. It does not add OCR, whitelist logic, or database schema changes.
+
+### Camera rotation and orientation
+
+Configure orientation in `config/config.yaml` under `camera`:
+
+```yaml
+camera:
+  rotation: 180
+  flip_horizontal: false
+  flip_vertical: false
+```
+
+Orientation is applied immediately after frame acquisition, so Camera consumers, Motion, Plate Detector, HTTP Preview, snapshots, and JPEG output all use the corrected frame.
+
+### Color pipeline
+
+Picamera2 is configured for `RGB888`. GateKeeper treats captured frames as RGB internally and converts RGB to BGR only at JPEG/OpenCV file encoding boundaries. Startup logs the camera pixel format, internal frame format, and JPEG encoder format to help catch double-conversion mistakes.
+
+### Detector thresholds and debug candidates
+
+Detector tuning is configured under `plate_detector`:
+
+```yaml
+plate_detector:
+  debug: true
+  confidence_threshold: 0.70
+  aspect_ratio_min: 3.5
+  aspect_ratio_max: 6.5
+  min_area: 2500
+  max_area: 70000
+  min_rectangularity: 0.80
+  max_rotation: 15
+  border_margin: 20
+```
+
+Candidates that violate any threshold are rejected. Plate events and crops are created only for a selected candidate whose confidence is at or above `confidence_threshold`. In debug mode, overlays draw every candidate: green for the selected candidate, yellow for valid discarded candidates, and red for rejected candidates. Labels show score, aspect ratio, area, and rectangularity.
+
+### HTTP debug endpoints
+
+Each endpoint returns MJPEG and leaves the normal HTTP Preview `/stream` behavior intact:
+
+- `/debug/gray`
+- `/debug/edges`
+- `/debug/contours`
+- `/debug/candidates`
+- `/debug/final`
+
+### Calibration workflow
+
+1. Open the HTTP Preview and verify the image orientation first.
+2. Adjust `camera.rotation`, `camera.flip_horizontal`, and `camera.flip_vertical` until motion, snapshots, and preview all match the real scene.
+3. Enable `plate_detector.debug` and review candidate overlays.
+4. Tune confidence, aspect ratio, area, rectangularity, rotation, and border margin until rejected candidates are red and the selected candidate is green.
+5. Use `/api/snapshot` or the display snapshot shortcut to save `snapshot_<timestamp>.jpg` files with overlays for comparison.

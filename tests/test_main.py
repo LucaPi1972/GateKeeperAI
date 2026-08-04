@@ -1024,3 +1024,62 @@ def test_startup_metadata_logs_frame_pipeline(caplog, tmp_path):
     assert "Picamera2" in caplog.text
     assert "CameraManager" in caplog.text
     assert "JPEG Encoder input format: BGR" in caplog.text
+
+
+def test_runtime_consumers_share_frame_master_identity_and_checksum():
+    np = pytest.importorskip("numpy")
+    frame_master = np.arange(27, dtype=np.uint8).reshape((3, 3, 3))
+    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+
+    state.update_frame(
+        frame_master,
+        motion_state=main.MotionEventManager.IDLE,
+        fps=1.0,
+        resolution="3x3",
+    )
+    pipeline = state.pipeline_snapshot()
+
+    assert pipeline["master_frame_id"] == id(frame_master)
+    assert pipeline["preview_frame_id"] == id(frame_master)
+    assert pipeline["snapshot_frame_id"] == id(frame_master)
+    assert pipeline["motion_frame_id"] == id(frame_master)
+    assert pipeline["plate_frame_id"] == id(frame_master)
+    assert pipeline["checksum"] == main.CameraManager.frame_checksum(frame_master)
+    assert pipeline["preview_checksum"] == pipeline["checksum"]
+    assert pipeline["snapshot_checksum"] == pipeline["checksum"]
+    assert pipeline["verification"] == "PASS"
+
+
+def test_diagnostics_are_generated_from_raw_frame_after_pipeline_change(tmp_path):
+    np = pytest.importorskip("numpy")
+
+    class FakePicamera:
+        camera_properties = {"Model": "fake"}
+        def __init__(self):
+            self.frame = np.array([[[10, 20, 30]]], dtype=np.uint8)
+        def capture_array(self):
+            return self.frame.copy()
+
+    manager = main.CameraManager(1, 1, 1, pipeline="swap_rb", rotation=180, flip_horizontal=True)
+    manager._camera = FakePicamera()
+
+    diagnostics = manager.generate_diagnostics(tmp_path)
+
+    assert set(diagnostics) == {"frame_raw.jpg", "frame_rgb.jpg", "frame_bgr.jpg", "frame_swap_rb.jpg"}
+    assert manager.diagnostics_source_id is not None
+    assert manager.raw_frame_id == manager.diagnostics_source_id
+    assert manager._last_frame_master is None
+
+
+def test_motion_and_plate_receive_frame_master_object():
+    np = pytest.importorskip("numpy")
+    frame_master = np.zeros((20, 60, 3), dtype=np.uint8)
+    motion = FakeMotionDetector([(True, 1234.0)])
+    plate = FakePlateDetector(main.PlateDetection((1, 1, 5, 5), 0.8, object()))
+    manager = main.MotionEventManager(motion, None, logging.getLogger("test-gatekeeper"), plate_detector=plate)
+
+    manager.process_frame(frame_master)
+
+    assert motion.calls == 1
+    assert plate.calls == 1
+    assert manager.last_plate_crop is frame_master

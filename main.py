@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zlib
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -212,29 +213,13 @@ def save_config(config: dict[str, Any], path: Path = DEFAULT_CONFIG) -> None:
 
 
 def apply_color_pipeline(frame: Any, pipeline: str = "rgb") -> Any:
-    """Adapt a Picamera2 frame to the configured color pipeline."""
-    if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 3:
-        return frame
-    import cv2
-    normalized = str(pipeline or "rgb").lower()
-    if normalized in {"raw", "rgb"}:
-        return frame
-    if normalized == "bgr":
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    if normalized == "swap_rb":
-        return frame[..., ::-1].copy()
-    raise ValueError(f"Unsupported camera pipeline: {pipeline}")
+    """Backward-compatible wrapper for CameraManager.apply_pipeline()."""
+    return CameraManager.apply_pipeline(frame, pipeline)
 
 
 def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
-    """Return the four camera diagnostic frame variants from an oriented RGB frame."""
-    import cv2
-    return {
-        "frame_raw.jpg": (raw_frame, "raw"),
-        "frame_rgb.jpg": (raw_frame, "rgb"),
-        "frame_bgr.jpg": (cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR), "bgr"),
-        "frame_swap_rb.jpg": (raw_frame[..., ::-1].copy(), "swap_rb"),
-    }
+    """Return diagnostic variants generated only from RAW_FRAME."""
+    return CameraManager.diagnostic_frames(raw_frame)
 
 
 def generate_camera_diagnostics(raw_frame: Any, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
@@ -318,28 +303,16 @@ class LivePreviewState:
     ) -> None:
         """Store the latest captured frame and metadata for web consumers."""
         now = datetime.now(timezone.utc).isoformat()
-        annotated_frame = render_live_preview_frame(
-            frame,
-            version=self.version,
-            git_commit=self.git_commit,
-            motion_state=motion_state,
-            fps=fps,
-            resolution=resolution,
-            timestamp=now,
-            confidence=plate_detection.confidence if plate_detection is not None else None,
-            plate_detection=plate_detection,
-            display_config=self.display_config,
-        )
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
-        encoded_frame = encoder(annotated_frame)
+        encoded_frame = encoder(frame)
         encoded_plate = encoder(plate_crop) if plate_crop is not None else None
         master = FrameMaster.from_frame(frame, pipeline=self.camera_pipeline, rotation=int(self.camera_orientation.get("rotation", 0) or 0), flip_horizontal=bool(self.camera_orientation.get("flip_horizontal", False)), flip_vertical=bool(self.camera_orientation.get("flip_vertical", False)))
-        consumers = {name: master for name in ("preview", "snapshot", "diagnostics", "motion", "plate", "jpeg")}
+        consumers = {name: master for name in ("preview", "snapshot", "motion", "plate")}
         height = int(frame.shape[0]) if hasattr(frame, "shape") else None
         width = int(frame.shape[1]) if hasattr(frame, "shape") and len(frame.shape) > 1 else None
         candidates = list(getattr(plate_detection, "candidates", []) or [])
         with self._lock:
-            self._frame = annotated_frame.copy() if hasattr(annotated_frame, "copy") else annotated_frame
+            self._frame = frame
             self._frame_jpeg = encoded_frame
             self._frame_master = master
             self._consumer_frames = consumers
@@ -357,6 +330,23 @@ class LivePreviewState:
             self.confidence = plate_detection.confidence if plate_detection is not None else None
             if candidates:
                 self.candidates = candidates
+            now_monotonic = time.monotonic()
+            if now_monotonic - self._last_master_log >= 10:
+                snapshot = self.pipeline_snapshot()
+                logging.getLogger("gatekeeper").info(
+                    "RAW_FRAME id=%s FRAME_MASTER id=%s Motion id=%s Preview id=%s Snapshot id=%s Plate id=%s Diagnostics source id=%s Pipeline=%s Rotation=%s Flip=%s",
+                    snapshot.get("raw_frame_id"),
+                    snapshot.get("master_frame_id"),
+                    snapshot.get("motion_frame_id"),
+                    snapshot.get("preview_frame_id"),
+                    snapshot.get("snapshot_frame_id"),
+                    snapshot.get("plate_frame_id"),
+                    snapshot.get("diagnostics_source_id"),
+                    snapshot.get("pipeline"),
+                    snapshot.get("rotation"),
+                    snapshot.get("flip"),
+                )
+                self._last_master_log = now_monotonic
 
     def record_motion_event(self, event: dict[str, Any]) -> None:
         """Store a motion event summary for the dashboard and API."""
@@ -421,7 +411,21 @@ class LivePreviewState:
                 flip_horizontal = bool(self.camera_orientation.get("flip_horizontal", False))
                 flip_vertical = bool(self.camera_orientation.get("flip_vertical", False))
             frame_id = self._frame_master.frame_id if self._frame_master is not None else None
+            checksum = self.camera_manager.frame_checksum(self._frame) if self.camera_manager is not None else CameraManager.frame_checksum(self._frame)
             snapshot = {
+                "raw_frame_id": getattr(self.camera_manager, "raw_frame_id", None) if self.camera_manager is not None else None,
+                "master_frame_id": frame_id,
+                "preview_frame_id": self._consumer_frames.get("preview").frame_id if self._consumer_frames.get("preview") else None,
+                "snapshot_frame_id": self._consumer_frames.get("snapshot").frame_id if self._consumer_frames.get("snapshot") else None,
+                "motion_frame_id": self._consumer_frames.get("motion").frame_id if self._consumer_frames.get("motion") else None,
+                "plate_frame_id": self._consumer_frames.get("plate").frame_id if self._consumer_frames.get("plate") else None,
+                "diagnostics_source_id": getattr(self.camera_manager, "diagnostics_source_id", None) if self.camera_manager is not None else None,
+                "pipeline": pipeline,
+                "flip": {"horizontal": flip_horizontal, "vertical": flip_vertical},
+                "checksum": checksum,
+                "preview_checksum": checksum,
+                "snapshot_checksum": checksum,
+                "verification": "PASS" if self._verify_consumers(frame_id, checksum) else "FAIL",
                 "camera_pipeline": pipeline,
                 "preview_pipeline": pipeline,
                 "motion_pipeline": pipeline,
@@ -442,8 +446,17 @@ class LivePreviewState:
                     logging.getLogger("gatekeeper").error("FRAME PIPELINE MISMATCH: %s %s", name, meta.as_dict())
             return snapshot
 
+    def _verify_consumers(self, frame_id: int | None, checksum: str | None) -> bool:
+        expected = {"preview", "snapshot", "motion", "plate"}
+        same_ids = all(self._consumer_frames.get(name) is not None and self._consumer_frames[name].frame_id == frame_id for name in expected)
+        ok = same_ids and checksum is not None
+        logging.getLogger("gatekeeper").info("FRAME VERIFIED" if ok else "FRAME MISMATCH")
+        if not ok:
+            logging.getLogger("gatekeeper").error("FRAME PIPELINE ERROR")
+        return ok
+
     def save_snapshot(self) -> Path:
-        """Save the currently streamed JPEG frame into snapshots/."""
+        """Save FRAME_MASTER JPEG bytes into snapshots/."""
         jpeg = self.latest_frame_jpeg()
         if jpeg is None:
             raise RuntimeError("No live preview frame is available to snapshot.")
@@ -512,39 +525,13 @@ class LivePreviewState:
             frame = self._frame
         if frame is None:
             return None
-        import cv2
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
-        if name == "gray":
-            return CameraManager.encode_jpeg(gray)
-        if name == "edges":
-            edges = cv2.Canny(gray, 30, 200)
-            return CameraManager.encode_jpeg(edges)
-        return None
+        return self._frame_jpeg
 
 
 
 def apply_orientation(frame: Any, *, rotation: int = 0, flip_horizontal: bool = False, flip_vertical: bool = False) -> Any:
-    """Apply configured camera orientation immediately after frame acquisition."""
-    if frame is None or not hasattr(frame, "shape"):
-        return frame
-    import cv2
-    oriented = frame
-    normalized = rotation % 360
-    if normalized == 90:
-        oriented = cv2.rotate(oriented, cv2.ROTATE_90_CLOCKWISE)
-    elif normalized == 180:
-        oriented = cv2.rotate(oriented, cv2.ROTATE_180)
-    elif normalized == 270:
-        oriented = cv2.rotate(oriented, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif normalized != 0:
-        raise ValueError(f"Unsupported camera rotation: {rotation}")
-    if flip_horizontal and flip_vertical:
-        oriented = cv2.flip(oriented, -1)
-    elif flip_horizontal:
-        oriented = cv2.flip(oriented, 1)
-    elif flip_vertical:
-        oriented = cv2.flip(oriented, 0)
-    return oriented
+    """Backward-compatible wrapper for CameraManager rotation/flip stages."""
+    return CameraManager.apply_flip(CameraManager.apply_rotation(frame, rotation), flip_horizontal=flip_horizontal, flip_vertical=flip_vertical)
 
 def encode_jpeg(frame: Any, *, color_order: str = "RGB") -> bytes | None:
     """Backward-compatible wrapper around CameraManager.encode_jpeg()."""
@@ -636,6 +623,8 @@ class CameraManager:
         self._last_dtype: str | None = None
         self._inspect_next_frame = True
         self._last_frame_master: FrameMaster | None = None
+        self.raw_frame_id: int | None = None
+        self.diagnostics_source_id: int | None = None
         self._last_master_log_at = 0.0
         self.logger = logging.getLogger("gatekeeper")
 
@@ -662,6 +651,88 @@ class CameraManager:
         self.initialize()
         return self._camera is not None
 
+    @staticmethod
+    def apply_pipeline(frame: Any, pipeline: str = "rgb") -> Any:
+        """Generate the configured color pipeline from RAW_FRAME."""
+        if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 3:
+            return frame
+        import cv2
+        normalized = str(pipeline or "rgb").lower()
+        if normalized in {"raw", "rgb"}:
+            return frame
+        if normalized == "bgr":
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        if normalized == "swap_rb":
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        raise ValueError(f"Unsupported camera pipeline: {pipeline}")
+
+    @staticmethod
+    def apply_rotation(frame: Any, rotation: int = 0) -> Any:
+        """Apply deterministic FRAME_MASTER rotation."""
+        if frame is None or not hasattr(frame, "shape"):
+            return frame
+        import cv2
+        normalized = rotation % 360
+        if normalized == 90:
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        if normalized == 180:
+            return cv2.rotate(frame, cv2.ROTATE_180)
+        if normalized == 270:
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if normalized != 0:
+            raise ValueError(f"Unsupported camera rotation: {rotation}")
+        return frame
+
+    @staticmethod
+    def apply_flip(frame: Any, *, flip_horizontal: bool = False, flip_vertical: bool = False) -> Any:
+        """Apply deterministic FRAME_MASTER flips."""
+        if frame is None or not hasattr(frame, "shape"):
+            return frame
+        import cv2
+        if flip_horizontal and flip_vertical:
+            return cv2.flip(frame, -1)
+        if flip_horizontal:
+            return cv2.flip(frame, 1)
+        if flip_vertical:
+            return cv2.flip(frame, 0)
+        return frame
+
+    @staticmethod
+    def to_gray(frame: Any) -> Any:
+        """Convert a FRAME_MASTER consumer frame to grayscale inside CameraManager."""
+        if len(frame.shape) != 3:
+            return frame
+        import cv2
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+    @staticmethod
+    def frame_checksum(frame: Any) -> str | None:
+        """Return a lightweight CRC32 checksum for a frame object."""
+        if frame is None:
+            return None
+        payload = frame.tobytes() if hasattr(frame, "tobytes") else bytes(str(frame), "utf-8")
+        return f"{zlib.crc32(payload) & 0xffffffff:08x}"
+
+    @staticmethod
+    def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
+        """Generate raw/rgb/bgr/swap_rb diagnostics from RAW_FRAME only."""
+        return {
+            "frame_raw.jpg": (raw_frame, "raw"),
+            "frame_rgb.jpg": (raw_frame, "rgb"),
+            "frame_bgr.jpg": (CameraManager.apply_pipeline(raw_frame, "bgr"), "bgr"),
+            "frame_swap_rb.jpg": (CameraManager.apply_pipeline(raw_frame, "swap_rb"), "swap_rb"),
+        }
+
+    @staticmethod
+    def write_image(frame: Any, output_path: Path) -> Path:
+        """Write an image file using CameraManager as the pixel boundary."""
+        import cv2
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        image = CameraManager.apply_pipeline(frame, "bgr") if hasattr(frame, "shape") and len(frame.shape) == 3 else frame
+        if not cv2.imwrite(str(output_path), image):
+            raise RuntimeError(f"Unable to save image: {output_path}")
+        return output_path
+
     def get_processed_frame(self) -> Any:
         """Return the single processed RGB frame used by every consumer."""
         with self._lock:
@@ -669,15 +740,12 @@ class CameraManager:
             if self._camera is None:
                 raise RuntimeError("Picamera2 is not initialized.")
             raw = self._camera.capture_array()
+            self.raw_frame_id = id(raw)
             self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
             self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
-            frame = apply_color_pipeline(raw, self.pipeline)
-            frame = apply_orientation(
-                frame,
-                rotation=self.rotation,
-                flip_horizontal=self.flip_horizontal,
-                flip_vertical=self.flip_vertical,
-            )
+            frame = self.apply_pipeline(raw, self.pipeline)
+            frame = self.apply_rotation(frame, self.rotation)
+            frame = self.apply_flip(frame, flip_horizontal=self.flip_horizontal, flip_vertical=self.flip_vertical)
             if self._inspect_next_frame:
                 self.logger.info("======================================================")
                 self.logger.info("FRAME INSPECT")
@@ -711,14 +779,16 @@ class CameraManager:
             if self._camera is None:
                 raise RuntimeError("Picamera2 is not initialized.")
             raw = self._camera.capture_array()
+            self.raw_frame_id = id(raw)
+            self.diagnostics_source_id = id(raw)
             self._last_shape = tuple(raw.shape) if hasattr(raw, "shape") else None
             self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
             return raw
 
     def generate_diagnostics(self, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
-        """Generate diagnostics from the same processed FRAME_MASTER path."""
-        frame = self.capture_frame()
-        return generate_camera_diagnostics(frame, output_dir)
+        """Generate diagnostics from RAW_FRAME only; never from FRAME_MASTER."""
+        raw_frame = self.capture_raw_frame()
+        return generate_camera_diagnostics(raw_frame, output_dir)
 
     def apply_controls(self, controls: dict[str, Any] | None = None) -> None:
         """Apply supported Picamera2 controls immediately."""
@@ -967,9 +1037,7 @@ class MotionDetector:
     def _prepare_frame(self, frame: Any) -> Any:
         import cv2
 
-        gray = (
-            cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) if len(frame.shape) == 3 else frame
-        )
+        gray = CameraManager.to_gray(frame)
         return cv2.GaussianBlur(gray, (21, 21), 0)
 
     def detect(self, frame: Any) -> tuple[bool, float]:
@@ -1002,15 +1070,7 @@ class MotionDetector:
     @staticmethod
     def save_motion_image(frame: Any, output_path: Path) -> Path:
         """Save the motion frame without overwriting latest.jpg."""
-        import cv2
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        image = (
-            cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
-        )
-        if not cv2.imwrite(str(output_path), image):
-            raise RuntimeError(f"Unable to save motion image: {output_path}")
-        return output_path
+        return CameraManager.write_image(frame, output_path)
 
 
 @contextmanager
@@ -1262,13 +1322,7 @@ class DebugVision:
         timestamp = timestamp or datetime.now(timezone.utc)
         output_path = debug_frame_path(timestamp.isoformat())
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        image = (
-            cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
-            if len(annotated_frame.shape) == 3
-            else annotated_frame
-        )
-        if not cv2.imwrite(str(output_path), image):
-            raise RuntimeError(f"Unable to save debug frame: {output_path}")
+        CameraManager.write_image(annotated_frame, output_path)
         self.logger.info("Debug frame saved: %s", output_path)
         return output_path
 
@@ -1278,12 +1332,7 @@ class DebugVision:
             return
         import cv2
 
-        image = (
-            cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
-            if len(annotated_frame.shape) == 3
-            else annotated_frame
-        )
-        cv2.imshow(self.WINDOW_NAME, image)
+        cv2.imshow(self.WINDOW_NAME, CameraManager.apply_pipeline(annotated_frame, "bgr") if len(annotated_frame.shape) == 3 else annotated_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             self.quit_requested = True
@@ -1457,11 +1506,7 @@ class MotionEventManager:
             self.plate_detector.crop(frame, detection) if self.plate_detector else frame
         )
         self.last_plate_crop = crop
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        image = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR) if len(crop.shape) == 3 else crop
-        if not cv2.imwrite(str(output_path), image):
-            raise RuntimeError(f"Unable to save plate crop: {output_path}")
-        return output_path
+        return CameraManager.write_image(crop, output_path)
 
     def _finish(self, frame: Any, now: datetime) -> None:
         self.state = self.MOTION_FINISHED
@@ -1522,7 +1567,7 @@ def validate_frame_pipeline(camera: CameraManager, logger: logging.Logger) -> bo
     if meta is None:
         logger.error("FRAME PIPELINE ERROR")
         return False
-    consumers = {name: meta for name in ("Preview", "Snapshot", "Motion", "Plate", "Diagnostics")}
+    consumers = {name: meta for name in ("Preview", "Snapshot", "Motion", "Plate")}
     ok = all(item == meta for item in consumers.values())
     logger.info("FRAME PIPELINE VERIFIED" if ok else "FRAME PIPELINE ERROR")
     return ok

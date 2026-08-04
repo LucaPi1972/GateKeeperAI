@@ -123,7 +123,9 @@ class DisplayManager:
         self.create_window()
         import cv2
 
-        image = cv2.cvtColor(displayed, cv2.COLOR_RGB2BGR) if len(displayed.shape) == 3 else displayed
+        import sys
+        camera_manager = getattr(sys.modules.get("main") or sys.modules.get("__main__"), "CameraManager")
+        image = camera_manager.apply_pipeline(displayed, "bgr") if len(displayed.shape) == 3 else displayed
         cv2.imshow(self.window_name, image)
         self.handle_key(cv2.waitKey(1) & 0xFF, displayed)
         return displayed
@@ -144,13 +146,11 @@ class DisplayManager:
 
     def save_snapshot(self, frame: Any, timestamp: datetime | None = None) -> Path:
         """Save the currently displayed frame to snapshots/."""
-        import cv2
+        import sys
 
+        camera_manager = getattr(sys.modules.get("main") or sys.modules.get("__main__"), "CameraManager")
         output_path = snapshot_path(timestamp)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if len(frame.shape) == 3 else frame
-        if not cv2.imwrite(str(output_path), image):
-            raise RuntimeError(f"Unable to save snapshot: {output_path}")
+        camera_manager.write_image(frame, output_path)
         self.logger.info("Snapshot saved: %s", output_path)
         return output_path
 

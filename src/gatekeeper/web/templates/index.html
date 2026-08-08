@@ -23,6 +23,35 @@
       <p id="snapshot_status" class="snapshot-status" aria-live="polite"></p>
     </section>
 
+    <section class="roi-preview-card">
+      <div class="title-row roi-title-row">
+        <div>
+          <p class="eyebrow">Plate ROI</p>
+          <h2>OCR preparation preview</h2>
+        </div>
+        <span id="roi_box" class="roi-box-label">No plate selected</span>
+      </div>
+      <div class="roi-grid">
+        <article class="roi-card">
+          <h3>Original ROI</h3>
+          <img id="roi_original" src="/plate_roi/original.jpg" alt="Selected plate original ROI">
+        </article>
+        <article class="roi-card">
+          <h3>Grayscale</h3>
+          <img id="roi_gray" src="/plate_roi/gray.jpg" alt="Selected plate grayscale ROI">
+        </article>
+        <article class="roi-card">
+          <h3>Enhanced</h3>
+          <img id="roi_enhanced" src="/plate_roi/enhanced.jpg" alt="Selected plate enhanced ROI">
+        </article>
+        <article class="roi-card">
+          <h3>Adaptive Threshold</h3>
+          <img id="roi_threshold" src="/plate_roi/threshold.jpg" alt="Selected plate threshold ROI">
+        </article>
+      </div>
+      <p id="roi_status" class="snapshot-status compact-status" aria-live="polite">Waiting for plate detection...</p>
+    </section>
+
     <section class="live-info-grid">
       <article class="status-card compact-card">
         <p class="eyebrow">Live Status</p>
@@ -84,6 +113,22 @@
       if (element) element.textContent = value;
     }
 
+    function refreshRoi(box) {
+      const status = document.getElementById('roi_status');
+      if (!box) {
+        status.textContent = 'Waiting for plate detection...';
+        setText('roi_box', 'No plate selected');
+        return;
+      }
+      setText('roi_box', `Box ${box}`);
+      const stamp = Date.now();
+      for (const variant of ['original', 'gray', 'enhanced', 'threshold']) {
+        const image = document.getElementById(`roi_${variant}`);
+        image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
+      }
+      status.textContent = 'ROI updated from the currently selected plate.';
+    }
+
     async function refreshStatus() {
       try {
         const response = await fetch('/api/frame_info', { cache: 'no-store' });
@@ -99,6 +144,7 @@
         setText('rejected_candidates', status.rejected_candidates ?? 0);
         setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a');
         setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase());
+        refreshRoi(status.plate_box);
       } catch (error) {
         setText('motion_state', 'OFFLINE');
       }

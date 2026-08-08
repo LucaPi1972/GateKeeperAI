@@ -44,7 +44,8 @@ PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
 DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
-PREVIEW_SWAP_RB_VALUES = {"true", "false"}
+LIVE_PREVIEW_PIPELINE = "bgr"
+LIVE_PREVIEW_CONVERSION = "RGB -> BGR"
 JPEG_ENCODER_INPUT_FORMAT = "BGR"
 
 
@@ -303,7 +304,7 @@ class LivePreviewState:
         self.detector_thresholds: dict[str, Any] = {}
         self.candidates: list[Any] = []
         self.motion_event_manager: Any | None = None
-        self.preview_swap_rb = "true"
+        self.preview_pipeline = LIVE_PREVIEW_PIPELINE
         self.diagnostics_mode = "RAW_FRAME"
         self.runtime_orientation = False
 
@@ -404,7 +405,8 @@ class LivePreviewState:
                 "rotation": self.camera_orientation.get("rotation"),
                 "flip_horizontal": self.camera_orientation.get("flip_horizontal"),
                 "flip_vertical": self.camera_orientation.get("flip_vertical"),
-                "stream_pipeline": self.camera_pipeline,
+                "stream_pipeline": LIVE_PREVIEW_PIPELINE,
+                "preview_pipeline": LIVE_PREVIEW_PIPELINE,
                 "snapshot_pipeline": self.camera_pipeline,
                 "motion_pipeline": self.camera_pipeline,
                 "plate_pipeline": self.camera_pipeline,
@@ -412,7 +414,7 @@ class LivePreviewState:
                 "diagnostics": self.diagnostics,
                 "diagnostics_mode": self.diagnostics_mode,
                 "runtime_orientation": self.runtime_orientation,
-                "preview_swap_rb": self.resolved_preview_swap_rb(),
+                "preview_color_conversion": LIVE_PREVIEW_CONVERSION,
                 "runtime_pipeline": self.pipeline_snapshot(),
             }
 
@@ -446,18 +448,18 @@ class LivePreviewState:
                 "snapshot_checksum": checksum,
                 "verification": "PASS" if self._verify_consumers(frame_id, checksum) else "FAIL",
                 "camera_pipeline": pipeline,
-                "preview_pipeline": pipeline,
+                "preview_pipeline": LIVE_PREVIEW_PIPELINE,
                 "motion_pipeline": pipeline,
                 "plate_pipeline": pipeline,
                 "snapshot_pipeline": pipeline,
                 "diagnostics_pipeline": "RAW_FRAME",
                 "diagnostics_mode": self.diagnostics_mode,
                 "runtime_orientation": self.runtime_orientation,
-                "preview_swap_rb": self.resolved_preview_swap_rb(),
+                "preview_color_conversion": LIVE_PREVIEW_CONVERSION,
                 "preview_source": "FRAME_MASTER",
                 "diagnostics_source": "RAW_FRAME",
                 "frame_master_status": "available" if self._frame_master is not None else "pending",
-                "jpeg_pipeline": pipeline,
+                "jpeg_pipeline": LIVE_PREVIEW_PIPELINE,
                 "jpeg_encoder": JPEG_ENCODER_INPUT_FORMAT,
                 "frame_id": frame_id,
                 "shape": self._frame_master.shape if self._frame_master is not None else None,
@@ -533,12 +535,13 @@ class LivePreviewState:
             return list(self.events)
 
     def resolved_preview_swap_rb(self) -> bool:
-        return str(self.preview_swap_rb or "true").lower() == "true"
+        return True
 
     def encode_preview_jpeg(self, frame: Any) -> bytes | None:
-        preview_frame = CameraManager.apply_pipeline(frame, "swap_rb") if self.resolved_preview_swap_rb() else frame
+        """Encode HTTP Live Preview by converting FRAME_MASTER RGB to BGR exactly once."""
+        preview_frame = CameraManager.apply_pipeline(frame, LIVE_PREVIEW_PIPELINE)
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
-        return encoder(preview_frame)
+        return encoder(preview_frame, color_order="BGR")
 
     def latest_frame_jpeg(self) -> bytes | None:
         with self._lock:
@@ -897,7 +900,7 @@ class CameraManager:
         """Capture and save images/latest.jpg."""
         return self.capture(LATEST_IMAGE)
 
-    def get_info(self, *, preview_swap_rb: str = "true") -> dict[str, Any]:
+    def get_info(self) -> dict[str, Any]:
         """Return camera backend, resolution, pixel format, and model details."""
         model = "unknown"
         if self._camera is not None:
@@ -917,7 +920,7 @@ class CameraManager:
             "color_pipeline": self.pipeline,
             "jpeg_encoder_format": JPEG_ENCODER_INPUT_FORMAT,
             "orientation": {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical},
-            "preview_swap_rb": preview_swap_rb,
+            "preview_pipeline": LIVE_PREVIEW_PIPELINE,
         }
 
     def stop(self) -> None:
@@ -1168,9 +1171,11 @@ def log_startup_metadata(
     logger.info("Flip Vertical: %s", orientation.get("flip_vertical"))
     logger.info("Motion Detector: %s", camera_info.get("color_pipeline"))
     logger.info("Plate Detector: %s", camera_info.get("color_pipeline"))
-    logger.info("HTTP Preview: %s", camera_info.get("color_pipeline"))
+    logger.info("HTTP Preview: %s", LIVE_PREVIEW_PIPELINE)
     logger.info("Snapshot: %s", camera_info.get("color_pipeline"))
-    logger.info("Preview swap RB: %s", str(camera_info.get("preview_swap_rb", "true")).lower())
+    logger.info("Live Preview pipeline: BGR")
+    logger.info("Live Preview color conversion: RGB -> BGR")
+    logger.info("Live Preview source: FRAME_MASTER")
     logger.info("Diagnostics source: RAW_FRAME")
     logger.info("Preview source: FRAME_MASTER")
     logger.info("JPEG Encoder input format: %s", camera_info.get("jpeg_encoder_format"))
@@ -1194,7 +1199,7 @@ def log_startup_metadata(
     logger.info("Flip V: %s", orientation.get("flip_vertical"))
     logger.info("Motion pipeline: %s", camera_info.get("color_pipeline"))
     logger.info("Plate pipeline: %s", camera_info.get("color_pipeline"))
-    logger.info("Stream pipeline: %s", camera_info.get("color_pipeline"))
+    logger.info("Stream pipeline: %s", LIVE_PREVIEW_PIPELINE)
     logger.info("Snapshot pipeline: %s", camera_info.get("color_pipeline"))
     logger.info("JPEG encoder format: %s", camera_info.get("jpeg_encoder_format"))
     logger.info("Capture time: %s", capture_time)
@@ -1796,9 +1801,9 @@ def main(argv: list[str] | None = None) -> int:
     live_preview_state.camera_pipeline = str(camera_config.get("pipeline", "rgb"))
     live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
     preview_config = config.get("preview", {})
-    live_preview_state.preview_swap_rb = str(preview_config.get("swap_rb", "true")).lower()
-    if live_preview_state.preview_swap_rb not in PREVIEW_SWAP_RB_VALUES:
-        live_preview_state.preview_swap_rb = "true"
+    live_preview_state.preview_pipeline = str(preview_config.get("pipeline", LIVE_PREVIEW_PIPELINE)).lower()
+    if live_preview_state.preview_pipeline != LIVE_PREVIEW_PIPELINE:
+        live_preview_state.preview_pipeline = LIVE_PREVIEW_PIPELINE
     live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
     motion_event_manager = MotionEventManager(
@@ -1837,7 +1842,7 @@ def main(argv: list[str] | None = None) -> int:
                 live_preview_server.start()
             capture_time = datetime.now(timezone.utc).isoformat()
             log_startup_metadata(
-                logger, version, git_commit, camera.get_info(preview_swap_rb=live_preview_state.preview_swap_rb), capture_time, image_path
+                logger, version, git_commit, camera.get_info(), capture_time, image_path
             )
             print_startup_status()
             run_until_interrupted(

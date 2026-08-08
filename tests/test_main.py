@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.6.9"
+    assert main.get_version() == "0.6.10"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.6.9" in output
+    assert "GateKeeper AI v0.6.10" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -381,7 +381,7 @@ def test_run_until_interrupted_captures_frames_detects_motion_and_stops_cleanly(
 def test_default_config_contains_preview_settings():
     config = main.load_config()
 
-    assert config["preview"] == {"swap_rb": True}
+    assert config["preview"] == {"pipeline": "bgr"}
 
 
 def test_default_config_contains_debug_vision_settings():
@@ -1032,7 +1032,9 @@ def test_startup_metadata_logs_frame_pipeline(caplog, tmp_path):
     assert "Picamera2" in caplog.text
     assert "CameraManager" in caplog.text
     assert "JPEG Encoder input format: BGR" in caplog.text
-    assert "Preview swap RB: true" in caplog.text
+    assert "Live Preview pipeline: BGR" in caplog.text
+    assert "Live Preview color conversion: RGB -> BGR" in caplog.text
+    assert "Live Preview source: FRAME_MASTER" in caplog.text
 
 
 def test_runtime_consumers_share_frame_master_identity_and_checksum():
@@ -1120,7 +1122,7 @@ def test_preview_swap_rb_is_isolated_from_snapshot(tmp_path):
 
 
 
-def test_preview_swap_rb_false_leaves_preview_frame_unchanged(monkeypatch):
+def test_live_preview_ignores_swap_rb_false_and_converts_to_bgr(monkeypatch):
     np = pytest.importorskip("numpy")
     frame_master = np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)
     encoded_inputs = []
@@ -1131,16 +1133,16 @@ def test_preview_swap_rb_false_leaves_preview_frame_unchanged(monkeypatch):
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
     state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
-    state.preview_swap_rb = "false"
+    state.preview_pipeline = "bgr"
 
     state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
 
     assert state.latest_frame_jpeg() == b"jpeg"
-    assert np.array_equal(encoded_inputs[0], frame_master)
+    assert encoded_inputs[0].tolist() == [[[30, 20, 10], [60, 50, 40]]]
     assert np.array_equal(frame_master, np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8))
 
 
-def test_preview_swap_rb_true_swaps_preview_only_once(monkeypatch):
+def test_live_preview_converts_rgb_to_bgr_only_once(monkeypatch):
     np = pytest.importorskip("numpy")
     frame_master = np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)
     original = frame_master.copy()
@@ -1152,7 +1154,7 @@ def test_preview_swap_rb_true_swaps_preview_only_once(monkeypatch):
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
     state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
-    state.preview_swap_rb = "true"
+    state.preview_pipeline = "bgr"
 
     state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
     pipeline = state.pipeline_snapshot()
@@ -1162,8 +1164,55 @@ def test_preview_swap_rb_true_swaps_preview_only_once(monkeypatch):
     assert np.array_equal(frame_master, original)
     assert pipeline["master_frame_id"] == id(frame_master)
     assert pipeline["preview_frame_id"] == id(frame_master)
-    assert pipeline["preview_swap_rb"] is True
+    assert pipeline["preview_pipeline"] == "bgr"
+    assert pipeline["preview_color_conversion"] == "RGB -> BGR"
 
+
+
+def test_live_preview_pipeline_stays_bgr_when_camera_pipeline_changes(tmp_path):
+    np = pytest.importorskip("numpy")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("camera:\n  pipeline: rgb\n  rotation: 0\n  flip_horizontal: false\n  flip_vertical: false\npreview:\n  pipeline: bgr\n", encoding="utf-8")
+    state = main.LivePreviewState(version="0.6.10", git_commit="abc123")
+    state.config_path = config_path
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x2")
+
+    before = state.pipeline_snapshot()
+    state.update_camera_config({"pipeline": "swap_rb"})
+    after = state.pipeline_snapshot()
+
+    assert before["preview_pipeline"] == "bgr"
+    assert after["camera_pipeline"] == "swap_rb"
+    assert after["preview_pipeline"] == "bgr"
+    assert after["motion_pipeline"] == "swap_rb"
+    assert after["plate_pipeline"] == "swap_rb"
+
+
+def test_live_preview_conversion_does_not_change_master_motion_plate_snapshot_or_diagnostics(monkeypatch):
+    np = pytest.importorskip("numpy")
+    frame_master = np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8)
+    original = frame_master.copy()
+    encoded_inputs = []
+
+    def fake_encode(frame, *, color_order="RGB"):
+        encoded_inputs.append((frame.copy(), color_order))
+        return b"jpeg"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
+    state = main.LivePreviewState(version="0.6.10", git_commit="abc123")
+    state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
+    pipeline = state.pipeline_snapshot()
+
+    assert len(encoded_inputs) == 1
+    assert np.array_equal(encoded_inputs[0][0], np.array([[[3, 2, 1], [6, 5, 4]]], dtype=np.uint8))
+    assert encoded_inputs[0][1] == "BGR"
+    assert np.array_equal(frame_master, original)
+    assert pipeline["master_frame_id"] == id(frame_master)
+    assert pipeline["motion_frame_id"] == id(frame_master)
+    assert pipeline["plate_frame_id"] == id(frame_master)
+    assert pipeline["snapshot_frame_id"] == id(frame_master)
+    assert pipeline["diagnostics_pipeline"] == "RAW_FRAME"
 
 def test_diagnostics_unchanged_by_preview_swap_rb(tmp_path):
     np = pytest.importorskip("numpy")

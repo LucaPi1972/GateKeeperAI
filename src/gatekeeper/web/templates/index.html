@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.7.8</title>
+  <title>GateKeeper AI 0.7.9</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="title-row">
         <div>
           <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.7.8</h1>
+          <h1>GateKeeper AI 0.7.9</h1>
         </div>
         <div class="action-row">
           <button id="snapshot_button" type="button">Save Snapshot</button>
@@ -44,6 +44,7 @@
           <dt>Selected</dt><dd id="selected_candidate">n/a</dd>
           <dt>Rejected</dt><dd id="rejected_candidates">0</dd>
           <dt>Confidence</dt><dd id="confidence">n/a</dd>
+          <dt>Quality</dt><dd id="cal_quality">n/a</dd>
           <dt>Selection</dt><dd id="cal_selection_score">n/a</dd>
           <dt>Zone</dt><dd id="cal_zone_score">n/a</dd>
           <dt>Stable</dt><dd id="cal_stable">n/a</dd>
@@ -109,6 +110,8 @@
         const calibration = await response.json();
         const selected = calibration.selected_candidate;
         const thresholds = calibration.thresholds || {};
+        const quality = selected?.plate_quality;
+        setText('cal_quality', quality === undefined ? 'n/a' : `${(Number(quality) * 100).toFixed(0)}%`);
         setText('cal_selection_score', selected?.selection_score === undefined ? 'n/a' : Number(selected.selection_score).toFixed(3));
         setText('cal_zone_score', selected?.zone_score === undefined ? 'n/a' : Number(selected.zone_score).toFixed(3));
         setText('cal_stable', selected?.stable_selection === undefined ? 'n/a' : (selected.stable_selection ? 'YES' : 'NO'));

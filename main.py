@@ -44,7 +44,7 @@ PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
 DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
-PREVIEW_SWAP_RB_VALUES = {"auto", "true", "false"}
+PREVIEW_SWAP_RB_VALUES = {"true", "false"}
 JPEG_ENCODER_INPUT_FORMAT = "BGR"
 
 
@@ -303,7 +303,7 @@ class LivePreviewState:
         self.detector_thresholds: dict[str, Any] = {}
         self.candidates: list[Any] = []
         self.motion_event_manager: Any | None = None
-        self.preview_swap_rb = "auto"
+        self.preview_swap_rb = "true"
         self.diagnostics_mode = "RAW_FRAME"
         self.runtime_orientation = False
 
@@ -533,12 +533,7 @@ class LivePreviewState:
             return list(self.events)
 
     def resolved_preview_swap_rb(self) -> bool:
-        value = str(self.preview_swap_rb or "auto").lower()
-        if value == "true":
-            return True
-        if value == "false":
-            return False
-        return str(self.camera_pipeline).lower() == "bgr"
+        return str(self.preview_swap_rb or "true").lower() == "true"
 
     def encode_preview_jpeg(self, frame: Any) -> bytes | None:
         preview_frame = CameraManager.apply_pipeline(frame, "swap_rb") if self.resolved_preview_swap_rb() else frame
@@ -902,7 +897,7 @@ class CameraManager:
         """Capture and save images/latest.jpg."""
         return self.capture(LATEST_IMAGE)
 
-    def get_info(self, *, preview_swap_rb: str = "auto") -> dict[str, Any]:
+    def get_info(self, *, preview_swap_rb: str = "true") -> dict[str, Any]:
         """Return camera backend, resolution, pixel format, and model details."""
         model = "unknown"
         if self._camera is not None:
@@ -1175,7 +1170,7 @@ def log_startup_metadata(
     logger.info("Plate Detector: %s", camera_info.get("color_pipeline"))
     logger.info("HTTP Preview: %s", camera_info.get("color_pipeline"))
     logger.info("Snapshot: %s", camera_info.get("color_pipeline"))
-    logger.info("Preview swap RB: %s", camera_info.get("preview_swap_rb", "auto"))
+    logger.info("Preview swap RB: %s", str(camera_info.get("preview_swap_rb", "true")).lower())
     logger.info("Diagnostics source: RAW_FRAME")
     logger.info("Preview source: FRAME_MASTER")
     logger.info("JPEG Encoder input format: %s", camera_info.get("jpeg_encoder_format"))
@@ -1801,9 +1796,9 @@ def main(argv: list[str] | None = None) -> int:
     live_preview_state.camera_pipeline = str(camera_config.get("pipeline", "rgb"))
     live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
     preview_config = config.get("preview", {})
-    live_preview_state.preview_swap_rb = str(preview_config.get("swap_rb", "auto")).lower()
+    live_preview_state.preview_swap_rb = str(preview_config.get("swap_rb", "true")).lower()
     if live_preview_state.preview_swap_rb not in PREVIEW_SWAP_RB_VALUES:
-        live_preview_state.preview_swap_rb = "auto"
+        live_preview_state.preview_swap_rb = "true"
     live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
     motion_event_manager = MotionEventManager(

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.9
+
+- Fix live HTTP preview color by applying the configured preview-only red/blue swap before MJPEG JPEG encoding.
+- Keep FRAME_MASTER, snapshots, diagnostics, motion detection, and plate detection unchanged.
+
 ## 0.6.8
 
 - Stabilize live preview color handling with an isolated preview-only red/blue swap configuration.

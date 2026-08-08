@@ -56,6 +56,13 @@ plate_detector:
   min_rectangularity: 0.80
   max_rotation: 15
   border_margin: 20
+  reading_zone_weight: 0.15
+  soft_selection_threshold: 0.42
+  reading_zone:
+    x: 656
+    y: 581
+    width: 328
+    height: 70
 
 preview:
   pipeline: bgr

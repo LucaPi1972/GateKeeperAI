@@ -18,6 +18,8 @@ class PlateCandidate:
     valid: bool
     rejected_reason: str = ""
     selected: bool = False
+    zone_score: float = 0.0
+    selection_score: float = 0.0
 
     @property
     def rejected(self) -> bool:
@@ -33,6 +35,8 @@ class PlateCandidate:
             "aspect_ratio": self.aspect_ratio,
             "rectangularity": self.rectangularity,
             "confidence": self.confidence,
+            "zone_score": self.zone_score,
+            "selection_score": self.selection_score,
             "selected": self.selected,
             "rejected": not self.selected,
             "rejection_reason": "" if self.selected else reason,
@@ -54,7 +58,13 @@ class PlateDetection:
 
 
 class PlateDetector:
-    """Detect rectangular license plate candidates without OCR."""
+    """Detect rectangular license plate candidates without OCR.
+
+    Release 0.7.5 keeps the 0.7.4 full-frame detector, but uses a small central
+    reading zone only as a soft ranking signal. Candidates are never discarded
+    merely because they are outside the zone. A near-valid fallback is allowed
+    when the strict detector has no valid candidate, preventing false negatives.
+    """
 
     def __init__(
         self,
@@ -67,6 +77,9 @@ class PlateDetector:
         max_rotation: float = 15.0,
         border_margin: int = 20,
         debug: bool = False,
+        reading_zone: dict[str, Any] | None = None,
+        reading_zone_weight: float = 0.15,
+        soft_selection_threshold: float = 0.42,
     ) -> None:
         self.min_aspect_ratio = min_aspect_ratio
         self.max_aspect_ratio = max_aspect_ratio
@@ -77,6 +90,9 @@ class PlateDetector:
         self.max_rotation = max_rotation
         self.border_margin = border_margin
         self.debug = debug
+        self.reading_zone = dict(reading_zone or {})
+        self.reading_zone_weight = max(0.0, min(float(reading_zone_weight), 1.0))
+        self.soft_selection_threshold = max(0.0, min(float(soft_selection_threshold), 1.0))
         self.last_candidates: list[PlateCandidate] = []
         self.last_debug_frames: dict[str, Any] = {}
         self._initialized = False
@@ -88,6 +104,52 @@ class PlateDetector:
         import cv2
         self._cv2 = cv2
         self._initialized = True
+
+    def _zone_score(self, bbox: tuple[int, int, int, int], frame_w: int, frame_h: int) -> float:
+        """Return 0..1 proximity to the small central reading zone."""
+        if self.reading_zone:
+            zone = self.reading_zone
+            x = float(zone.get("x", 0))
+            y = float(zone.get("y", 0))
+            w = max(float(zone.get("width", 0)), 1.0)
+            h = max(float(zone.get("height", 0)), 1.0)
+        else:
+            # Default to the same 20% x ~5.7% central guide used by the UI
+            # for the 1640x1232 camera, expressed proportionally to the frame.
+            w = frame_w * 0.20
+            h = frame_h * (70.0 / 1232.0)
+            x = (frame_w - w) / 2.0
+            y = (frame_h - h) / 2.0
+        cx = bbox[0] + bbox[2] / 2.0
+        cy = bbox[1] + bbox[3] / 2.0
+        zone_cx = x + w / 2.0
+        zone_cy = y + h / 2.0
+        dx = abs(cx - zone_cx) / max(w / 2.0, 1.0)
+        dy = abs(cy - zone_cy) / max(h / 2.0, 1.0)
+        return round(max(0.0, 1.0 - max(dx, dy)), 3)
+
+    def _selection_score(
+        self,
+        confidence: float,
+        aspect_ratio: float,
+        rectangularity: float,
+        area: float,
+        zone_score: float,
+        frame_area: float,
+    ) -> float:
+        """Combine geometry quality with a deliberately small zone preference."""
+        ratio_center = (self.min_aspect_ratio + self.max_aspect_ratio) / 2
+        ratio_half_range = max((self.max_aspect_ratio - self.min_aspect_ratio) / 2, 0.001)
+        ratio_score = max(0.0, 1.0 - abs(aspect_ratio - ratio_center) / ratio_half_range)
+        area_score = min(area / max(frame_area * 0.10, 1.0), 1.0)
+        geometry = (
+            confidence * 0.35
+            + ratio_score * 0.25
+            + max(0.0, min(rectangularity, 1.0)) * 0.20
+            + area_score * 0.20
+        )
+        weight = self.reading_zone_weight
+        return round(max(0.0, min(1.0, geometry * (1.0 - weight) + zone_score * weight)), 3)
 
     def detect(self, frame: Any) -> PlateDetection | None:
         self.initialize()
@@ -130,6 +192,8 @@ class PlateDetector:
             ratio_range = max((self.max_aspect_ratio - self.min_aspect_ratio) / 2, 0.001)
             ratio_score = max(0.0, 1.0 - abs(aspect_ratio - ratio_center) / ratio_range)
             confidence = round(max(0.01, area_score * 0.45 + ratio_score * 0.35 + rectangularity * 0.20), 3)
+            zone_score = self._zone_score((x, y, width, height), frame_w, frame_h)
+            selection_score = self._selection_score(confidence, aspect_ratio, rectangularity, area, zone_score, frame_area)
             reason = ""
             if area < self.min_area:
                 reason = "area_too_small"
@@ -141,17 +205,52 @@ class PlateDetector:
                 reason = "rectangularity"
             elif confidence < self.confidence_threshold:
                 reason = "confidence"
-            candidates.append(PlateCandidate((x, y, width, height), confidence, approx, aspect_ratio, area, rectangularity, rotation, reason == "", reason))
+            candidates.append(PlateCandidate((x, y, width, height), confidence, approx, aspect_ratio, area, rectangularity, rotation, reason == "", reason, False, zone_score, selection_score))
 
-        valid = [c for c in candidates if c.valid]
-        selected = max(valid, key=lambda c: c.confidence, default=None)
+        strict_valid = [c for c in candidates if c.valid]
+        selected = max(strict_valid, key=lambda c: c.selection_score, default=None)
+
+        # If strict filtering finds nothing, allow one near-valid candidate.
+        # Grossly small/large objects and wildly wrong aspect ratios remain excluded.
+        if selected is None:
+            near_valid = [
+                c for c in candidates
+                if c.area >= self.min_area * 0.75
+                and c.area <= self.max_area * 1.05
+                and self.min_aspect_ratio - 0.35 <= c.aspect_ratio <= self.max_aspect_ratio + 0.35
+                and c.rectangularity >= max(0.45, self.min_rectangularity - 0.35)
+                and c.rotation <= self.max_rotation + 10.0
+                and c.selection_score >= self.soft_selection_threshold
+            ]
+            selected = max(near_valid, key=lambda c: c.selection_score, default=None)
+            if selected is not None:
+                selected = PlateCandidate(
+                    selected.bounding_box, selected.confidence, selected.contour,
+                    selected.aspect_ratio, selected.area, selected.rectangularity,
+                    selected.rotation, True, "soft_selected", False,
+                    selected.zone_score, selected.selection_score,
+                )
+
         if selected is not None:
-            candidates = [PlateCandidate(c.bounding_box, c.confidence, c.contour, c.aspect_ratio, c.area, c.rectangularity, c.rotation, c.valid, c.rejected_reason, c.bounding_box == selected.bounding_box) for c in candidates]
+            candidates = [
+                PlateCandidate(
+                    c.bounding_box, c.confidence, c.contour, c.aspect_ratio, c.area,
+                    c.rectangularity, c.rotation, c.valid, c.rejected_reason,
+                    c.bounding_box == selected.bounding_box,
+                    c.zone_score, c.selection_score,
+                )
+                for c in candidates
+            ]
             selected = next(c for c in candidates if c.selected)
+
         self.last_candidates = candidates
         if selected is None:
             return None
-        return PlateDetection(selected.bounding_box, selected.confidence, selected.contour, selected.aspect_ratio, selected.area, selected.rectangularity, selected.rotation, tuple(candidates))
+        return PlateDetection(
+            selected.bounding_box, selected.confidence, selected.contour,
+            selected.aspect_ratio, selected.area, selected.rectangularity,
+            selected.rotation, tuple(candidates)
+        )
 
     def crop(self, frame: Any, detection: PlateDetection) -> Any:
         x, y, width, height = detection.bounding_box

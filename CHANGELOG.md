@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.11
+
+- Restore the HTTP Live Preview color behavior from Release 0.6.9 using the fixed preview-only red/blue swap configuration.
+- Remove web/API pipeline-selection operations while keeping `/api/pipeline` as read-only runtime metadata.
+- Keep motion detection, plate detection, snapshots, diagnostics, CameraManager, and rotation behavior unchanged.
+
 ## 0.6.10
 
 - Fix HTTP Live Preview to use a fixed BGR pipeline by converting FRAME_MASTER RGB to BGR exactly once before MJPEG JPEG encoding.

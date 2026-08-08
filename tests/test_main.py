@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.6.10"
+    assert main.get_version() == "0.6.11"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.6.10" in output
+    assert "GateKeeper AI v0.6.11" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -604,6 +604,15 @@ def test_display_manager_window_creation_and_close(monkeypatch):
     assert calls[-1][0] == "destroy"
 
 
+
+def test_index_html_displays_release_and_no_pipeline_selection_buttons():
+    html = Path("src/gatekeeper/web/templates/index.html").read_text(encoding="utf-8")
+
+    assert "GateKeeper AI 0.6.11" in html
+    assert "Live Preview Pipeline: BGR" in html
+    for forbidden in ("Use RGB", "Use BGR", "Use RAW", "Use SWAP RB", "preview pipeline selection", "pipeline selection buttons"):
+        assert forbidden not in html
+
 def test_default_config_contains_web_live_preview_settings():
     config = main.load_config()
 
@@ -948,8 +957,8 @@ def test_live_preview_server_diagnostics_page_and_camera_update(monkeypatch, tmp
     assert update.status_code == 200
     pipeline = client.get("/api/pipeline")
     assert pipeline.status_code == 200
-    assert pipeline.get_json()["camera_pipeline"] == "bgr"
-    assert main.load_config(state.config_path)["camera"]["pipeline"] == "bgr"
+    assert pipeline.get_json()["camera_pipeline"] == "rgb"
+    assert main.load_config(state.config_path)["camera"]["pipeline"] == "rgb"
     assert main.load_config(state.config_path)["camera"]["flip_vertical"] is True
 
 
@@ -1028,12 +1037,14 @@ def test_startup_metadata_logs_frame_pipeline(caplog, tmp_path):
     with caplog.at_level(logging.INFO, logger="gatekeeper"):
         main.log_startup_metadata(logging.getLogger("gatekeeper"), "0.6.9", "abc123", {**camera_info, "preview_swap_rb": True}, "now", image_path)
 
+    assert "GateKeeper AI v0.6.9" in caplog.text
     assert "FRAME PIPELINE" in caplog.text
     assert "Picamera2" in caplog.text
     assert "CameraManager" in caplog.text
     assert "JPEG Encoder input format: BGR" in caplog.text
     assert "Live Preview pipeline: BGR" in caplog.text
-    assert "Live Preview color conversion: RGB -> BGR" in caplog.text
+    assert "Live Preview configuration: inherited from 0.6.9" in caplog.text
+    assert "Pipeline selection UI: disabled" in caplog.text
     assert "Live Preview source: FRAME_MASTER" in caplog.text
 
 
@@ -1122,7 +1133,7 @@ def test_preview_swap_rb_is_isolated_from_snapshot(tmp_path):
 
 
 
-def test_live_preview_ignores_swap_rb_false_and_converts_to_bgr(monkeypatch):
+def test_live_preview_uses_0_6_9_swap_rb_configuration(monkeypatch):
     np = pytest.importorskip("numpy")
     frame_master = np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)
     encoded_inputs = []
@@ -1142,7 +1153,7 @@ def test_live_preview_ignores_swap_rb_false_and_converts_to_bgr(monkeypatch):
     assert np.array_equal(frame_master, np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8))
 
 
-def test_live_preview_converts_rgb_to_bgr_only_once(monkeypatch):
+def test_live_preview_reproduces_0_6_9_preview_encoding(monkeypatch):
     np = pytest.importorskip("numpy")
     frame_master = np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)
     original = frame_master.copy()
@@ -1165,28 +1176,33 @@ def test_live_preview_converts_rgb_to_bgr_only_once(monkeypatch):
     assert pipeline["master_frame_id"] == id(frame_master)
     assert pipeline["preview_frame_id"] == id(frame_master)
     assert pipeline["preview_pipeline"] == "bgr"
-    assert pipeline["preview_color_conversion"] == "RGB -> BGR"
+    assert pipeline["preview_swap_rb"] is True
+    assert pipeline["preview_configuration"] == "inherited from 0.6.9"
 
 
 
-def test_live_preview_pipeline_stays_bgr_when_camera_pipeline_changes(tmp_path):
-    np = pytest.importorskip("numpy")
+def test_api_camera_ignores_pipeline_changes_but_keeps_orientation(tmp_path, monkeypatch):
+    pytest.importorskip("flask")
+    pytest.importorskip("yaml")
     config_path = tmp_path / "config.yaml"
     config_path.write_text("camera:\n  pipeline: rgb\n  rotation: 0\n  flip_horizontal: false\n  flip_vertical: false\npreview:\n  pipeline: bgr\n", encoding="utf-8")
-    state = main.LivePreviewState(version="0.6.10", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.11", git_commit="abc123")
     state.config_path = config_path
-    frame = np.zeros((2, 2, 3), dtype=np.uint8)
-    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x2")
+    state.camera_pipeline = "rgb"
+    server = main.LivePreviewServer(state=state)
+    monkeypatch.setattr(main.threading.Thread, "start", lambda self: None)
+    server.start()
+    client = server._app.test_client()
 
-    before = state.pipeline_snapshot()
-    state.update_camera_config({"pipeline": "swap_rb"})
-    after = state.pipeline_snapshot()
+    response = client.post("/api/camera", json={"pipeline": "swap_rb", "rotation": 90})
+    pipeline = client.get("/api/pipeline").get_json()
 
-    assert before["preview_pipeline"] == "bgr"
-    assert after["camera_pipeline"] == "swap_rb"
-    assert after["preview_pipeline"] == "bgr"
-    assert after["motion_pipeline"] == "swap_rb"
-    assert after["plate_pipeline"] == "swap_rb"
+    assert response.status_code == 200
+    assert pipeline["camera_pipeline"] == "rgb"
+    assert pipeline["preview_pipeline"] == "bgr"
+    persisted = main.load_config(config_path)
+    assert persisted["camera"]["pipeline"] == "rgb"
+    assert persisted["camera"]["rotation"] == 90
 
 
 def test_live_preview_conversion_does_not_change_master_motion_plate_snapshot_or_diagnostics(monkeypatch):
@@ -1200,7 +1216,7 @@ def test_live_preview_conversion_does_not_change_master_motion_plate_snapshot_or
         return b"jpeg"
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
-    state = main.LivePreviewState(version="0.6.10", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.11", git_commit="abc123")
     state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
     pipeline = state.pipeline_snapshot()
 

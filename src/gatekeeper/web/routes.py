@@ -60,8 +60,6 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     def update_camera():
         payload = request.get_json(silent=True) or {}
         updates: dict[str, Any] = {}
-        if "pipeline" in payload:
-            updates["pipeline"] = payload["pipeline"]
         for key in ("rotation", "flip_horizontal", "flip_vertical"):
             if key in payload:
                 updates[key] = payload[key]

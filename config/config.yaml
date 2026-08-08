@@ -41,10 +41,10 @@ display:
     width: 1312
     height: 986
   plate_ideal_area:
-    x: 574
-    y: 493
-    width: 492
-    height: 246
+    x: 656
+    y: 581
+    width: 328
+    height: 70
 
 plate_detector:
   debug: true
@@ -82,7 +82,7 @@ web:
 
 plate_calibration:
   enabled: true
-  save_frames: true
+  save_frames: false
   show_candidates: true
   show_rejected: true
   show_metrics: true

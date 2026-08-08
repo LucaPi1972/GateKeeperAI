@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.8
+
+- Compact the HTTP Live Preview into a single-screen calibration layout.
+- Keep live preview, selection, plate metrics, and detector thresholds visible together without a second calibration page.
+- Reduce typography, spacing, card padding, and control size so the diagnostic information fits below the live image on desktop screens.
+- Keep the detector, camera color pipeline, BGR Live Preview behavior, FRAME_MASTER, Motion Detection, snapshots, and OCR scope unchanged.
+- Correct the visible HTTP page title/header to `GateKeeper AI 0.7.8`.
+
 ## 0.7.7
 
 - Keep the 0.7.6 detector thresholds, soft Reading Zone ranking, and temporal selection behavior unchanged.

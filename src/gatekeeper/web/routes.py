@@ -41,6 +41,15 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
 
     @app.get("/api/diagnostics")
     def diagnostics_status():
+        runtime_orientation = request.args.get("runtime_orientation", "false").lower() == "true"
+        state.runtime_orientation = runtime_orientation
+        if state.camera_manager is not None:
+            try:
+                state.diagnostics = state.camera_manager.generate_diagnostics(
+                    Path(state.diagnostics_dir), runtime_orientation=runtime_orientation
+                )
+            except Exception as exc:
+                return jsonify({"error": str(exc), **state.frame_info()}), 500
         return jsonify(state.frame_info())
 
     @app.get("/api/pipeline")

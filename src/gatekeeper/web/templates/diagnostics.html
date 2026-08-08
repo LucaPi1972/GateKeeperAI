@@ -3,15 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI Camera Diagnostics</title>
+  <title>GateKeeper AI Camera Calibration</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard diagnostics-page">
     <section class="preview-card">
-      <p class="eyebrow">Camera Diagnostics</p>
-      <h1>Orientation & Camera Diagnostics</h1>
-      <div id="diagnostic_images" class="diagnostic-grid"></div>
+      <p class="eyebrow">Camera Calibration</p>
+      <h1>Camera Calibration</h1>
+      <label><input type="checkbox" id="runtime_orientation"> Show runtime orientation</label>
+      <section>
+        <p class="eyebrow">Sensor Calibration</p>
+        <div id="diagnostic_images" class="diagnostic-grid"></div>
+      </section>
+      <section>
+        <p class="eyebrow">Runtime Preview</p>
+        <dl>
+          <dt>Pipeline</dt><dd id="runtime_pipeline">n/a</dd>
+          <dt>Rotation</dt><dd id="runtime_rotation">n/a</dd>
+          <dt>Flip</dt><dd id="runtime_flip">n/a</dd>
+          <dt>Preview swap RB</dt><dd id="runtime_preview_swap">n/a</dd>
+          <dt>FRAME_MASTER status</dt><dd id="frame_master_status">n/a</dd>
+        </dl>
+      </section>
     </section>
     <aside class="status-card">
       <p class="eyebrow">Orientation</p>
@@ -43,16 +57,17 @@
     </aside>
   </main>
 <script>
-const names = [['frame_raw.jpg','raw'],['frame_rgb.jpg','rgb'],['frame_bgr.jpg','bgr'],['frame_swap_rb.jpg','swap_rb']];
+const names = [['frame_raw.jpg','RAW'],['frame_rgb.jpg','RGB'],['frame_bgr.jpg','BGR'],['frame_swap_rb.jpg','SWAP RB']];
 function controls(){const c={}; for (const id of ['AwbEnable','AeEnable']) c[id]=document.getElementById(id).checked; for (const id of ['Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) { const v=document.getElementById(id).value; if (v !== '') c[id]=Number(v); } return c;}
-async function refreshPipeline(){ const p=await fetch('/api/pipeline').then(r=>r.json()); pipeline_status.textContent=JSON.stringify(p,null,2); verification_status.textContent=p.verification || 'UNKNOWN'; verification_ids.textContent=JSON.stringify({raw:p.raw_frame_id, master:p.master_frame_id, preview:p.preview_frame_id, snapshot:p.snapshot_frame_id, motion:p.motion_frame_id, plate:p.plate_frame_id, diagnostics:p.diagnostics_source_id}); verification_checksums.textContent=JSON.stringify({master:p.checksum, preview:p.preview_checksum, snapshot:p.snapshot_checksum}); verification_pipeline.textContent=JSON.stringify({pipeline:p.pipeline, rotation:p.rotation, flip:p.flip}); return p; }
-async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); document.getElementById('camera_status').textContent=JSON.stringify(await r.json(), null, 2); await refreshPipeline(); render(); }
-function currentPipeline(){ try { return JSON.parse(pipeline_status.textContent || '{}')?.camera_pipeline || JSON.parse(camera_status.textContent || '{}')?.camera?.pipeline || JSON.parse(camera_status.textContent || '{}')?.active_pipeline || 'rgb'; } catch { return 'rgb'; }}
-function render(){ const root=document.getElementById('diagnostic_images'); const active=currentPipeline(); root.innerHTML=''; for (const [file,pipeline] of names){ const selected=pipeline===active; const card=document.createElement('article'); card.className='diagnostic-card'; card.innerHTML=`<h2>${file}</h2><p>Pipeline: ${pipeline}</p><img src="/diagnostics/${file}?t=${Date.now()}" alt="${file}"><button type="button" ${selected ? 'disabled' : ''}>${selected ? '✔ Active Pipeline' : 'Use this pipeline'}</button>`; card.querySelector('button').onclick=()=>apply({pipeline}); root.appendChild(card); }}
+async function refreshDiagnostics(){ const qs = runtime_orientation.checked ? '?runtime_orientation=true' : ''; const s=await fetch('/api/diagnostics'+qs).then(r=>r.json()); camera_status.textContent=JSON.stringify(s,null,2); render(); return s; }
+async function refreshPipeline(){ const p=await fetch('/api/pipeline').then(r=>r.json()); pipeline_status.textContent=JSON.stringify(p,null,2); verification_status.textContent=p.verification || 'UNKNOWN'; verification_ids.textContent=JSON.stringify({raw:p.raw_frame_id, master:p.master_frame_id, preview:p.preview_frame_id, snapshot:p.snapshot_frame_id, motion:p.motion_frame_id, plate:p.plate_frame_id, diagnostics:p.diagnostics_source_id}); verification_checksums.textContent=JSON.stringify({master:p.checksum, preview:p.preview_checksum, snapshot:p.snapshot_checksum}); verification_pipeline.textContent=JSON.stringify({pipeline:p.pipeline, rotation:p.rotation, flip:p.flip}); runtime_pipeline.textContent=p.pipeline || 'n/a'; runtime_rotation.textContent=p.rotation ?? 'n/a'; runtime_flip.textContent=JSON.stringify(p.flip || {}); runtime_preview_swap.textContent=String(p.preview_swap_rb); frame_master_status.textContent=p.frame_master_status || 'n/a'; return p; }
+async function apply(update){ const r=await fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)}); camera_status.textContent=JSON.stringify(await r.json(), null, 2); await refreshPipeline(); await refreshDiagnostics(); }
+function render(){ const root=document.getElementById('diagnostic_images'); root.innerHTML=''; for (const [file,label] of names){ const card=document.createElement('article'); card.className='diagnostic-card'; card.innerHTML=`<h2>${label}</h2><p>${file}</p><img src="/diagnostics/${file}?t=${Date.now()}" alt="${file}">`; root.appendChild(card); }}
 for (const id of ['rotation','flip_horizontal','flip_vertical']) document.addEventListener('change', e=>{ if(e.target.id===id) apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked}); });
+runtime_orientation.addEventListener('change', refreshDiagnostics);
 document.getElementById('save_camera').onclick=()=>apply({rotation:Number(rotation.value), flip_horizontal:flip_horizontal.checked, flip_vertical:flip_vertical.checked, controls:controls()});
 for (const id of ['AwbEnable','AeEnable','Brightness','Contrast','Saturation','Sharpness','ExposureValue','AnalogueGain']) document.getElementById(id).addEventListener('change', ()=>apply({controls:controls()}));
-render(); Promise.all([fetch('/api/diagnostics').then(r=>r.json()), refreshPipeline()]).then(([s,p])=>{rotation.value=p.rotation ?? s.camera_orientation?.rotation ?? 0; flip_horizontal.checked=!!(p.flip_horizontal ?? s.camera_orientation?.flip_horizontal); flip_vertical.checked=!!(p.flip_vertical ?? s.camera_orientation?.flip_vertical); camera_status.textContent=JSON.stringify(s,null,2); render();});
+render(); Promise.all([refreshDiagnostics(), refreshPipeline()]).then(([s,p])=>{rotation.value=p.rotation ?? s.camera_orientation?.rotation ?? 0; flip_horizontal.checked=!!(p.flip_horizontal ?? s.camera_orientation?.flip_horizontal); flip_vertical.checked=!!(p.flip_vertical ?? s.camera_orientation?.flip_vertical); render();});
 </script>
 </body>
 </html>

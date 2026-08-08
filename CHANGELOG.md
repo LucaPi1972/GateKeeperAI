@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.8
+
+- Stabilize live preview color handling with an isolated preview-only red/blue swap configuration.
+- Keep diagnostics generated from RAW_FRAME on every refresh, independent of runtime pipeline changes.
+- Rename diagnostics to Camera Calibration and separate sensor calibration images from runtime preview metadata.
+
 ## 0.6.7
 
 - Refactor runtime capture around one CameraManager-owned FRAME_MASTER consumed by preview, diagnostics, snapshots, motion detection, and plate detection.

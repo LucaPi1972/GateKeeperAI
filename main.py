@@ -44,6 +44,7 @@ PID_FILE = RUNTIME_DIR / "gatekeeper.pid"
 DATABASE_PATH = RUNTIME_DIR / "gatekeeper.db"
 CAMERA_BACKEND = "Picamera2"
 PIPELINES = {"raw": "As returned by Picamera2", "rgb": "Interpret frame as RGB", "bgr": "Convert RGB->BGR before JPEG encoding", "swap_rb": "Swap red and blue channels explicitly"}
+PREVIEW_SWAP_RB_VALUES = {"auto", "true", "false"}
 JPEG_ENCODER_INPUT_FORMAT = "BGR"
 
 
@@ -222,12 +223,24 @@ def diagnostic_frames(raw_frame: Any) -> dict[str, tuple[Any, str]]:
     return CameraManager.diagnostic_frames(raw_frame)
 
 
-def generate_camera_diagnostics(raw_frame: Any, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
-    """Save one oriented frame in all supported color interpretations."""
+def generate_camera_diagnostics(
+    raw_frame: Any,
+    output_dir: Path = DIAGNOSTICS_DIR,
+    *,
+    runtime_orientation: dict[str, Any] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Save RAW_FRAME diagnostic variants, optionally with runtime orientation only."""
     import cv2
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict[str, str]] = {}
     for filename, (frame, pipeline) in diagnostic_frames(raw_frame).items():
+        if runtime_orientation:
+            frame = apply_orientation(
+                frame,
+                rotation=int(runtime_orientation.get("rotation", 0) or 0),
+                flip_horizontal=bool(runtime_orientation.get("flip_horizontal", False)),
+                flip_vertical=bool(runtime_orientation.get("flip_vertical", False)),
+            )
         path = output_dir / filename
         if not cv2.imwrite(str(path), frame):
             raise RuntimeError(f"Unable to save diagnostic image: {path}")
@@ -290,6 +303,9 @@ class LivePreviewState:
         self.detector_thresholds: dict[str, Any] = {}
         self.candidates: list[Any] = []
         self.motion_event_manager: Any | None = None
+        self.preview_swap_rb = "auto"
+        self.diagnostics_mode = "RAW_FRAME"
+        self.runtime_orientation = False
 
     def update_frame(
         self,
@@ -304,7 +320,7 @@ class LivePreviewState:
         """Store the latest captured frame and metadata for web consumers."""
         now = datetime.now(timezone.utc).isoformat()
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
-        encoded_frame = encoder(frame)
+        encoded_frame = self.encode_preview_jpeg(frame)
         encoded_plate = encoder(plate_crop) if plate_crop is not None else None
         master = FrameMaster.from_frame(frame, pipeline=self.camera_pipeline, rotation=int(self.camera_orientation.get("rotation", 0) or 0), flip_horizontal=bool(self.camera_orientation.get("flip_horizontal", False)), flip_vertical=bool(self.camera_orientation.get("flip_vertical", False)))
         consumers = {name: master for name in ("preview", "snapshot", "motion", "plate")}
@@ -394,6 +410,9 @@ class LivePreviewState:
                 "plate_pipeline": self.camera_pipeline,
                 "camera_controls": self.camera_controls,
                 "diagnostics": self.diagnostics,
+                "diagnostics_mode": self.diagnostics_mode,
+                "runtime_orientation": self.runtime_orientation,
+                "preview_swap_rb": self.resolved_preview_swap_rb(),
                 "runtime_pipeline": self.pipeline_snapshot(),
             }
 
@@ -431,7 +450,13 @@ class LivePreviewState:
                 "motion_pipeline": pipeline,
                 "plate_pipeline": pipeline,
                 "snapshot_pipeline": pipeline,
-                "diagnostics_pipeline": pipeline,
+                "diagnostics_pipeline": "RAW_FRAME",
+                "diagnostics_mode": self.diagnostics_mode,
+                "runtime_orientation": self.runtime_orientation,
+                "preview_swap_rb": self.resolved_preview_swap_rb(),
+                "preview_source": "FRAME_MASTER",
+                "diagnostics_source": "RAW_FRAME",
+                "frame_master_status": "available" if self._frame_master is not None else "pending",
                 "jpeg_pipeline": pipeline,
                 "jpeg_encoder": JPEG_ENCODER_INPUT_FORMAT,
                 "frame_id": frame_id,
@@ -457,7 +482,10 @@ class LivePreviewState:
 
     def save_snapshot(self) -> Path:
         """Save FRAME_MASTER JPEG bytes into snapshots/."""
-        jpeg = self.latest_frame_jpeg()
+        with self._lock:
+            frame = self._frame
+        encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
+        jpeg = encoder(frame)
         if jpeg is None:
             raise RuntimeError("No live preview frame is available to snapshot.")
         timestamp = datetime.now(timezone.utc).isoformat().replace(":", "").replace("+", "Z")
@@ -491,10 +519,6 @@ class LivePreviewState:
         save_config(config, self.config_path)
         if self.camera_manager is not None:
             self.camera_manager.reconfigure(camera_config)
-            try:
-                self.diagnostics = self.camera_manager.generate_diagnostics(self.diagnostics_dir)
-            except Exception:
-                self.diagnostics = dict(self.diagnostics)
         self.camera_pipeline = str(camera_config.get("pipeline", self.camera_pipeline))
         self.camera_orientation = {
             "rotation": int(camera_config.get("rotation", 0)),
@@ -507,6 +531,19 @@ class LivePreviewState:
     def events_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self.events)
+
+    def resolved_preview_swap_rb(self) -> bool:
+        value = str(self.preview_swap_rb or "auto").lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        return str(self.camera_pipeline).lower() == "bgr"
+
+    def encode_preview_jpeg(self, frame: Any) -> bytes | None:
+        preview_frame = CameraManager.apply_pipeline(frame, "swap_rb") if self.resolved_preview_swap_rb() else frame
+        encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
+        return encoder(preview_frame)
 
     def latest_frame_jpeg(self) -> bytes | None:
         with self._lock:
@@ -785,10 +822,11 @@ class CameraManager:
             self._last_dtype = str(raw.dtype) if hasattr(raw, "dtype") else None
             return raw
 
-    def generate_diagnostics(self, output_dir: Path = DIAGNOSTICS_DIR) -> dict[str, dict[str, str]]:
+    def generate_diagnostics(self, output_dir: Path = DIAGNOSTICS_DIR, *, runtime_orientation: bool = False) -> dict[str, dict[str, str]]:
         """Generate diagnostics from RAW_FRAME only; never from FRAME_MASTER."""
         raw_frame = self.capture_raw_frame()
-        return generate_camera_diagnostics(raw_frame, output_dir)
+        orientation = {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical} if runtime_orientation else None
+        return generate_camera_diagnostics(raw_frame, output_dir, runtime_orientation=orientation)
 
     def apply_controls(self, controls: dict[str, Any] | None = None) -> None:
         """Apply supported Picamera2 controls immediately."""
@@ -864,7 +902,7 @@ class CameraManager:
         """Capture and save images/latest.jpg."""
         return self.capture(LATEST_IMAGE)
 
-    def get_info(self) -> dict[str, Any]:
+    def get_info(self, *, preview_swap_rb: str = "auto") -> dict[str, Any]:
         """Return camera backend, resolution, pixel format, and model details."""
         model = "unknown"
         if self._camera is not None:
@@ -884,6 +922,7 @@ class CameraManager:
             "color_pipeline": self.pipeline,
             "jpeg_encoder_format": JPEG_ENCODER_INPUT_FORMAT,
             "orientation": {"rotation": self.rotation, "flip_horizontal": self.flip_horizontal, "flip_vertical": self.flip_vertical},
+            "preview_swap_rb": preview_swap_rb,
         }
 
     def stop(self) -> None:
@@ -1136,6 +1175,9 @@ def log_startup_metadata(
     logger.info("Plate Detector: %s", camera_info.get("color_pipeline"))
     logger.info("HTTP Preview: %s", camera_info.get("color_pipeline"))
     logger.info("Snapshot: %s", camera_info.get("color_pipeline"))
+    logger.info("Preview swap RB: %s", camera_info.get("preview_swap_rb", "auto"))
+    logger.info("Diagnostics source: RAW_FRAME")
+    logger.info("Preview source: FRAME_MASTER")
     logger.info("JPEG Encoder input format: %s", camera_info.get("jpeg_encoder_format"))
     logger.info("======================================================")
     logger.info("Version: %s", version)
@@ -1758,6 +1800,10 @@ def main(argv: list[str] | None = None) -> int:
     live_preview_state.camera_manager = camera
     live_preview_state.camera_pipeline = str(camera_config.get("pipeline", "rgb"))
     live_preview_state.camera_orientation = {"rotation": int(camera_config.get("rotation", 0)), "flip_horizontal": bool(camera_config.get("flip_horizontal", False)), "flip_vertical": bool(camera_config.get("flip_vertical", False))}
+    preview_config = config.get("preview", {})
+    live_preview_state.preview_swap_rb = str(preview_config.get("swap_rb", "auto")).lower()
+    if live_preview_state.preview_swap_rb not in PREVIEW_SWAP_RB_VALUES:
+        live_preview_state.preview_swap_rb = "auto"
     live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
     motion_event_manager = MotionEventManager(
@@ -1789,14 +1835,14 @@ def main(argv: list[str] | None = None) -> int:
             plate_detector.initialize()
             camera.health_check()
             if bool(camera_config.get("diagnostics", False)):
-                live_preview_state.diagnostics = camera.generate_diagnostics()
+                live_preview_state.diagnostics = camera.generate_diagnostics(runtime_orientation=live_preview_state.runtime_orientation)
             image_path = camera.save_latest()
             validate_frame_pipeline(camera, logger)
             if bool(web_config.get("enabled", True)):
                 live_preview_server.start()
             capture_time = datetime.now(timezone.utc).isoformat()
             log_startup_metadata(
-                logger, version, git_commit, camera.get_info(), capture_time, image_path
+                logger, version, git_commit, camera.get_info(preview_swap_rb=live_preview_state.preview_swap_rb), capture_time, image_path
             )
             print_startup_status()
             run_until_interrupted(

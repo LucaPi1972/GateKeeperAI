@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+- Shrink the centered plate-ideal/reading guide to a compact 328x70 px zone on the 1640x1232 live frame, preserving an approximately 4.7:1 plate proportion.
+- Keep the guide centered at x=656, y=581 so the printed plate can be positioned deliberately inside a small reading area and false candidates outside the area remain visually obvious during calibration.
+- Disable continuous automatic calibration-frame saving; calibration frames remain manual through the existing Save Calibration Frame button.
+- Keep the PlateDetector thresholds from 0.7.1 unchanged, including `max_area: 150000`.
+- Keep Live Preview color handling, FRAME_MASTER, Motion Detection, diagnostics, snapshots, and OCR scope unchanged.
+
 ## 0.7.1
 
 - Increase only the PlateDetector `max_area` default and configured value from `70000` to `150000`; all other detector thresholds remain unchanged.
@@ -61,11 +69,9 @@
 
 - Add camera orientation calibration, corrected RGB/BGR logging, configurable plate detector filters, debug MJPEG endpoints, calibration panel metadata, and overlay snapshots.
 
-
 ## 0.5.2
 
 - Add Display & Calibration local OpenCV preview with overlays, fullscreen control, snapshots, keyboard shortcuts, and automatic headless fallback.
-
 
 ## Current Release
 
@@ -75,14 +81,12 @@ See `VERSION` for the current application version.
 
 - Added the first lightweight OpenCV Plate Detector.
 - Added plate crop generation when motion starts.
-- Added SQLite `plates` records for detected plate crops.
 
 ## 0.4.1
 
 - Converted motion detection from frame-based records to event-based `MOTION_START` and `MOTION_END` records.
 - Added Motion Event Manager state handling, event images, duration tracking, and maximum contour area tracking.
 - Added motion end delay configuration.
-
 - Stabilized the core runtime startup path.
 - Added automatic runtime PID file lifecycle management.
 - Added startup capture metadata logging.

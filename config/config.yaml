@@ -58,7 +58,7 @@ plate_detector:
   border_margin: 20
 
 preview:
-  swap_rb: true
+  pipeline: bgr
 
 debug:
   enabled: true

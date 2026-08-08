@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.10
+
+- Fix HTTP Live Preview to use a fixed BGR pipeline by converting FRAME_MASTER RGB to BGR exactly once before MJPEG JPEG encoding.
+- Keep FRAME_MASTER, motion detection, plate detection, snapshots, diagnostics, and database schema unchanged while runtime camera pipeline controls remain available.
+
 ## 0.6.9
 
 - Fix live HTTP preview color by applying the configured preview-only red/blue swap before MJPEG JPEG encoding.

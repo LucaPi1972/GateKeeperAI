@@ -34,6 +34,7 @@
         <dt>Rejected</dt><dd id="rejected_candidates">0</dd>
         <dt>Thresholds</dt><dd id="thresholds">n/a</dd>
         <dt>Orientation</dt><dd id="camera_orientation">n/a</dd>
+        <dt>Live Preview Pipeline</dt><dd id="live_preview_pipeline">Live Preview Pipeline: BGR</dd>
       </dl>
     </aside>
   </main>
@@ -53,6 +54,7 @@
       document.getElementById('rejected_candidates').textContent = status.rejected_candidates ?? 0;
       document.getElementById('thresholds').textContent = JSON.stringify(status.thresholds || {});
       document.getElementById('camera_orientation').textContent = JSON.stringify(status.camera_orientation || {});
+      document.getElementById('live_preview_pipeline').textContent = `Live Preview Pipeline: ${(status.preview_pipeline || 'bgr').toUpperCase()}`;
     }
     async function saveSnapshot() {
       const label = document.getElementById('snapshot_status');

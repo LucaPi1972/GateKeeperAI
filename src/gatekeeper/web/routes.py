@@ -40,7 +40,7 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
         """Return the selected plate ROI in one of the diagnostic forms."""
         from src.gatekeeper.plate_roi import build_roi_variants, encode_variant
 
-        if variant not in {"original", "gray", "enhanced", "threshold"}:
+        if variant not in {"original", "rectified", "gray", "enhanced", "threshold"}:
             return Response("Unknown ROI variant\n", status=404, mimetype="text/plain")
         try:
             with state._lock:

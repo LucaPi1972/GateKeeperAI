@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.7.9</title>
+  <title>GateKeeper AI 0.8.0</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="title-row">
         <div>
           <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.7.9</h1>
+          <h1>GateKeeper AI 0.8.0</h1>
         </div>
         <div class="action-row">
           <button id="snapshot_button" type="button">Save Snapshot</button>
@@ -32,171 +32,64 @@
         <span id="roi_box" class="roi-box-label">No plate selected</span>
       </div>
       <div class="roi-grid">
-        <article class="roi-card">
-          <h3>Original ROI</h3>
-          <img id="roi_original" src="/plate_roi/original.jpg" alt="Selected plate original ROI">
-        </article>
-        <article class="roi-card">
-          <h3>Grayscale</h3>
-          <img id="roi_gray" src="/plate_roi/gray.jpg" alt="Selected plate grayscale ROI">
-        </article>
-        <article class="roi-card">
-          <h3>Enhanced</h3>
-          <img id="roi_enhanced" src="/plate_roi/enhanced.jpg" alt="Selected plate enhanced ROI">
-        </article>
-        <article class="roi-card">
-          <h3>Adaptive Threshold</h3>
-          <img id="roi_threshold" src="/plate_roi/threshold.jpg" alt="Selected plate threshold ROI">
-        </article>
+        <article class="roi-card"><h3>Original ROI</h3><img id="roi_original" src="/plate_roi/original.jpg" alt="Selected plate original ROI"></article>
+        <article class="roi-card"><h3>Rectified</h3><img id="roi_rectified" src="/plate_roi/rectified.jpg" alt="Selected plate rectified ROI"></article>
+        <article class="roi-card"><h3>Grayscale</h3><img id="roi_gray" src="/plate_roi/gray.jpg" alt="Selected plate grayscale ROI"></article>
+        <article class="roi-card"><h3>Enhanced</h3><img id="roi_enhanced" src="/plate_roi/enhanced.jpg" alt="Selected plate enhanced ROI"></article>
+        <article class="roi-card"><h3>Adaptive Threshold</h3><img id="roi_threshold" src="/plate_roi/threshold.jpg" alt="Selected plate threshold ROI"></article>
       </div>
       <p id="roi_status" class="snapshot-status compact-status" aria-live="polite">Waiting for plate detection...</p>
     </section>
 
     <section class="live-info-grid">
-      <article class="status-card compact-card">
-        <p class="eyebrow">Live Status</p>
-        <dl class="compact-dl">
-          <dt>Motion</dt><dd id="motion_state">UNKNOWN</dd>
-          <dt>Resolution</dt><dd id="resolution">unknown</dd>
-          <dt>FPS</dt><dd id="fps">0</dd>
-          <dt>Pipeline</dt><dd id="live_preview_pipeline">BGR</dd>
-          <dt>Orientation</dt><dd id="camera_orientation">n/a</dd>
-          <dt>Plate</dt><dd id="plate_found">Not detected</dd>
-          <dt>Box</dt><dd id="plate_box">n/a</dd>
-        </dl>
-      </article>
-
-      <article class="status-card compact-card">
-        <p class="eyebrow">Selection</p>
-        <dl class="compact-dl">
-          <dt>Candidates</dt><dd id="candidate_count">0</dd>
-          <dt>Selected</dt><dd id="selected_candidate">n/a</dd>
-          <dt>Rejected</dt><dd id="rejected_candidates">0</dd>
-          <dt>Confidence</dt><dd id="confidence">n/a</dd>
-          <dt>Quality</dt><dd id="cal_quality">n/a</dd>
-          <dt>Selection</dt><dd id="cal_selection_score">n/a</dd>
-          <dt>Zone</dt><dd id="cal_zone_score">n/a</dd>
-          <dt>Stable</dt><dd id="cal_stable">n/a</dd>
-          <dt>Margin</dt><dd id="cal_margin">n/a</dd>
-          <dt>Mode</dt><dd id="cal_mode">n/a</dd>
-        </dl>
-      </article>
-
-      <article class="status-card compact-card">
-        <p class="eyebrow">Plate Metrics</p>
-        <dl class="compact-dl">
-          <dt>Area</dt><dd id="cal_area">n/a</dd>
-          <dt>Aspect</dt><dd id="cal_aspect">n/a</dd>
-          <dt>Rect.</dt><dd id="cal_rectangularity">n/a</dd>
-          <dt>Box</dt><dd id="cal_bbox">n/a</dd>
-          <dt>Reject</dt><dd id="cal_reasons">none</dd>
-        </dl>
-      </article>
-
-      <article class="status-card compact-card">
-        <p class="eyebrow">Detector Thresholds</p>
-        <dl class="compact-dl">
-          <dt>Area</dt><dd id="cal_area_threshold">n/a</dd>
-          <dt>Aspect</dt><dd id="cal_aspect_threshold">n/a</dd>
-          <dt>Rect.</dt><dd id="cal_rectangularity_threshold">n/a</dd>
-          <dt>Rotation</dt><dd id="cal_rotation_threshold">n/a</dd>
-          <dt>Confidence</dt><dd id="cal_confidence_threshold">n/a</dd>
-        </dl>
-      </article>
+      <article class="status-card compact-card"><p class="eyebrow">Live Status</p><dl class="compact-dl">
+        <dt>Motion</dt><dd id="motion_state">UNKNOWN</dd><dt>Resolution</dt><dd id="resolution">unknown</dd><dt>FPS</dt><dd id="fps">0</dd><dt>Pipeline</dt><dd id="live_preview_pipeline">BGR</dd><dt>Orientation</dt><dd id="camera_orientation">n/a</dd><dt>Plate</dt><dd id="plate_found">Not detected</dd><dt>Box</dt><dd id="plate_box">n/a</dd>
+      </dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Selection</p><dl class="compact-dl">
+        <dt>Candidates</dt><dd id="candidate_count">0</dd><dt>Selected</dt><dd id="selected_candidate">n/a</dd><dt>Rejected</dt><dd id="rejected_candidates">0</dd><dt>Confidence</dt><dd id="confidence">n/a</dd><dt>Quality</dt><dd id="cal_quality">n/a</dd><dt>Selection</dt><dd id="cal_selection_score">n/a</dd><dt>Zone</dt><dd id="cal_zone_score">n/a</dd><dt>Stable</dt><dd id="cal_stable">n/a</dd><dt>Margin</dt><dd id="cal_margin">n/a</dd><dt>Mode</dt><dd id="cal_mode">n/a</dd>
+      </dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Plate Metrics</p><dl class="compact-dl">
+        <dt>Area</dt><dd id="cal_area">n/a</dd><dt>Aspect</dt><dd id="cal_aspect">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity">n/a</dd><dt>Box</dt><dd id="cal_bbox">n/a</dd><dt>Reject</dt><dd id="cal_reasons">none</dd>
+      </dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Detector Thresholds</p><dl class="compact-dl">
+        <dt>Area</dt><dd id="cal_area_threshold">n/a</dd><dt>Aspect</dt><dd id="cal_aspect_threshold">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity_threshold">n/a</dd><dt>Rotation</dt><dd id="cal_rotation_threshold">n/a</dd><dt>Confidence</dt><dd id="cal_confidence_threshold">n/a</dd>
+      </dl></article>
     </section>
 
     <p id="calibration_status" class="snapshot-status compact-status" aria-live="polite"></p>
   </main>
   <script>
-    function setText(id, value) {
-      const element = document.getElementById(id);
-      if (element) element.textContent = value;
-    }
-
+    function setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
     function refreshRoi(box) {
       const status = document.getElementById('roi_status');
-      if (!box) {
-        status.textContent = 'Waiting for plate detection...';
-        setText('roi_box', 'No plate selected');
-        return;
-      }
+      if (!box) { status.textContent = 'Waiting for plate detection...'; setText('roi_box', 'No plate selected'); return; }
       setText('roi_box', `Box ${box}`);
       const stamp = Date.now();
-      for (const variant of ['original', 'gray', 'enhanced', 'threshold']) {
+      for (const variant of ['original', 'rectified', 'gray', 'enhanced', 'threshold']) {
         const image = document.getElementById(`roi_${variant}`);
-        image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
+        if (image) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
       }
       status.textContent = 'ROI updated from the currently selected plate.';
     }
-
     async function refreshStatus() {
       try {
-        const response = await fetch('/api/frame_info', { cache: 'no-store' });
-        const status = await response.json();
-        setText('motion_state', status.motion ?? 'UNKNOWN');
-        setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`);
-        setText('fps', status.fps ?? 0);
-        setText('confidence', status.confidence === null || status.confidence === undefined ? 'n/a' : Number(status.confidence).toFixed(3));
-        setText('plate_found', status.plate_found ? 'Detected' : 'Not detected');
-        setText('plate_box', status.plate_box || 'n/a');
-        setText('candidate_count', status.candidate_count ?? 0);
-        setText('selected_candidate', status.selected_candidate || 'n/a');
-        setText('rejected_candidates', status.rejected_candidates ?? 0);
-        setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a');
-        setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase());
-        refreshRoi(status.plate_box);
-      } catch (error) {
-        setText('motion_state', 'OFFLINE');
-      }
+        const response = await fetch('/api/frame_info', { cache: 'no-store' }); const status = await response.json();
+        setText('motion_state', status.motion ?? 'UNKNOWN'); setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`); setText('fps', status.fps ?? 0);
+        setText('confidence', status.confidence === null || status.confidence === undefined ? 'n/a' : Number(status.confidence).toFixed(3)); setText('plate_found', status.plate_found ? 'Detected' : 'Not detected'); setText('plate_box', status.plate_box || 'n/a');
+        setText('candidate_count', status.candidate_count ?? 0); setText('selected_candidate', status.selected_candidate || 'n/a'); setText('rejected_candidates', status.rejected_candidates ?? 0); setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a'); setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase()); refreshRoi(status.plate_box);
+      } catch (error) { setText('motion_state', 'OFFLINE'); }
     }
-
     async function refreshCalibration() {
       try {
-        const response = await fetch('/api/plate_calibration', { cache: 'no-store' });
-        const calibration = await response.json();
-        const selected = calibration.selected_candidate;
-        const thresholds = calibration.thresholds || {};
-        const quality = selected?.plate_quality;
-        setText('cal_quality', quality === undefined ? 'n/a' : `${(Number(quality) * 100).toFixed(0)}%`);
-        setText('cal_selection_score', selected?.selection_score === undefined ? 'n/a' : Number(selected.selection_score).toFixed(3));
-        setText('cal_zone_score', selected?.zone_score === undefined ? 'n/a' : Number(selected.zone_score).toFixed(3));
-        setText('cal_stable', selected?.stable_selection === undefined ? 'n/a' : (selected.stable_selection ? 'YES' : 'NO'));
-        setText('cal_margin', selected?.selection_margin === undefined ? 'n/a' : Number(selected.selection_margin).toFixed(3));
-        setText('cal_mode', selected?.selection_mode || 'n/a');
-        setText('cal_area', selected?.area ?? 'n/a');
-        setText('cal_aspect', selected?.aspect_ratio === undefined ? 'n/a' : Number(selected.aspect_ratio).toFixed(3));
-        setText('cal_rectangularity', selected?.rectangularity === undefined ? 'n/a' : Number(selected.rectangularity).toFixed(3));
-        setText('cal_bbox', selected?.bounding_box || 'n/a');
-        setText('cal_reasons', (calibration.candidates || []).map(c => c.rejection_reason).filter(Boolean).join(', ') || 'none');
-        setText('cal_area_threshold', `${thresholds.min_area ?? '?'}-${thresholds.max_area ?? '?'}`);
-        setText('cal_aspect_threshold', `${Number(thresholds.min_aspect_ratio ?? 0).toFixed(2)}-${Number(thresholds.max_aspect_ratio ?? 0).toFixed(2)}`);
-        setText('cal_rectangularity_threshold', thresholds.min_rectangularity ?? 'n/a');
-        setText('cal_rotation_threshold', thresholds.max_rotation === undefined ? 'n/a' : `${thresholds.max_rotation}°`);
-        setText('cal_confidence_threshold', thresholds.confidence_threshold ?? 'n/a');
-      } catch (error) {
-        setText('cal_mode', 'OFFLINE');
-      }
+        const response = await fetch('/api/plate_calibration', { cache: 'no-store' }); const calibration = await response.json(); const selected = calibration.selected_candidate; const thresholds = calibration.thresholds || {}; const quality = selected?.plate_quality;
+        setText('cal_quality', quality === undefined ? 'n/a' : `${(Number(quality) * 100).toFixed(0)}%`); setText('cal_selection_score', selected?.selection_score === undefined ? 'n/a' : Number(selected.selection_score).toFixed(3)); setText('cal_zone_score', selected?.zone_score === undefined ? 'n/a' : Number(selected.zone_score).toFixed(3)); setText('cal_stable', selected?.stable_selection === undefined ? 'n/a' : (selected.stable_selection ? 'YES' : 'NO')); setText('cal_margin', selected?.selection_margin === undefined ? 'n/a' : Number(selected.selection_margin).toFixed(3)); setText('cal_mode', selected?.selection_mode || 'n/a');
+        setText('cal_area', selected?.area ?? 'n/a'); setText('cal_aspect', selected?.aspect_ratio === undefined ? 'n/a' : Number(selected.aspect_ratio).toFixed(3)); setText('cal_rectangularity', selected?.rectangularity === undefined ? 'n/a' : Number(selected.rectangularity).toFixed(3)); setText('cal_bbox', selected?.bounding_box || 'n/a'); setText('cal_reasons', (calibration.candidates || []).map(c => c.rejection_reason).filter(Boolean).join(', ') || 'none');
+        setText('cal_area_threshold', `${thresholds.min_area ?? '?'}-${thresholds.max_area ?? '?'}`); setText('cal_aspect_threshold', `${Number(thresholds.min_aspect_ratio ?? 0).toFixed(2)}-${Number(thresholds.max_aspect_ratio ?? 0).toFixed(2)}`); setText('cal_rectangularity_threshold', thresholds.min_rectangularity ?? 'n/a'); setText('cal_rotation_threshold', thresholds.max_rotation === undefined ? 'n/a' : `${thresholds.max_rotation}°`); setText('cal_confidence_threshold', thresholds.confidence_threshold ?? 'n/a');
+      } catch (error) { setText('cal_mode', 'OFFLINE'); }
     }
-
-    async function saveCalibration() {
-      const label = document.getElementById('calibration_status');
-      const response = await fetch('/api/plate_calibration/save', { method: 'POST' });
-      const payload = await response.json();
-      label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
-    }
-
-    async function saveSnapshot() {
-      const label = document.getElementById('snapshot_status');
-      const response = await fetch('/api/snapshot', { method: 'POST' });
-      const payload = await response.json();
-      label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
-    }
-
-    document.getElementById('snapshot_button').addEventListener('click', saveSnapshot);
-    document.getElementById('calibration_button').addEventListener('click', saveCalibration);
-    refreshStatus();
-    refreshCalibration();
-    setInterval(() => { refreshStatus(); refreshCalibration(); }, 1000);
+    async function saveCalibration() { const label = document.getElementById('calibration_status'); const response = await fetch('/api/plate_calibration/save', { method: 'POST' }); const payload = await response.json(); label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error; }
+    async function saveSnapshot() { const label = document.getElementById('snapshot_status'); const response = await fetch('/api/snapshot', { method: 'POST' }); const payload = await response.json(); label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error; }
+    document.getElementById('snapshot_button').addEventListener('click', saveSnapshot); document.getElementById('calibration_button').addEventListener('click', saveCalibration); refreshStatus(); refreshCalibration(); setInterval(() => { refreshStatus(); refreshCalibration(); }, 1000);
   </script>
 </body>
 </html>

@@ -52,7 +52,7 @@ plate_detector:
   aspect_ratio_min: 3.5
   aspect_ratio_max: 6.5
   min_area: 2500
-  max_area: 70000
+  max_area: 150000
   min_rectangularity: 0.80
   max_rotation: 15
   border_margin: 20

@@ -3,34 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.0</title>
+  <title>GateKeeper AI 0.8.1</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div>
-          <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.8.0</h1>
-        </div>
-        <div class="action-row">
-          <button id="snapshot_button" type="button">Save Snapshot</button>
-          <button id="calibration_button" type="button">Save Calibration Frame</button>
-        </div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.1</h1></div>
+        <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
       <p id="snapshot_status" class="snapshot-status" aria-live="polite"></p>
     </section>
 
     <section class="roi-preview-card">
-      <div class="title-row roi-title-row">
-        <div>
-          <p class="eyebrow">Plate ROI</p>
-          <h2>OCR preparation preview</h2>
-        </div>
-        <span id="roi_box" class="roi-box-label">No plate selected</span>
-      </div>
+      <div class="title-row roi-title-row"><div><p class="eyebrow">Plate ROI</p><h2>OCR preparation preview</h2></div><span id="roi_box" class="roi-box-label">No plate selected</span></div>
       <div class="roi-grid">
         <article class="roi-card"><h3>Original ROI</h3><img id="roi_original" src="/plate_roi/original.jpg" alt="Selected plate original ROI"></article>
         <article class="roi-card"><h3>Rectified</h3><img id="roi_rectified" src="/plate_roi/rectified.jpg" alt="Selected plate rectified ROI"></article>
@@ -41,55 +29,53 @@
       <p id="roi_status" class="snapshot-status compact-status" aria-live="polite">Waiting for plate detection...</p>
     </section>
 
-    <section class="live-info-grid">
-      <article class="status-card compact-card"><p class="eyebrow">Live Status</p><dl class="compact-dl">
-        <dt>Motion</dt><dd id="motion_state">UNKNOWN</dd><dt>Resolution</dt><dd id="resolution">unknown</dd><dt>FPS</dt><dd id="fps">0</dd><dt>Pipeline</dt><dd id="live_preview_pipeline">BGR</dd><dt>Orientation</dt><dd id="camera_orientation">n/a</dd><dt>Plate</dt><dd id="plate_found">Not detected</dd><dt>Box</dt><dd id="plate_box">n/a</dd>
-      </dl></article>
-      <article class="status-card compact-card"><p class="eyebrow">Selection</p><dl class="compact-dl">
-        <dt>Candidates</dt><dd id="candidate_count">0</dd><dt>Selected</dt><dd id="selected_candidate">n/a</dd><dt>Rejected</dt><dd id="rejected_candidates">0</dd><dt>Confidence</dt><dd id="confidence">n/a</dd><dt>Quality</dt><dd id="cal_quality">n/a</dd><dt>Selection</dt><dd id="cal_selection_score">n/a</dd><dt>Zone</dt><dd id="cal_zone_score">n/a</dd><dt>Stable</dt><dd id="cal_stable">n/a</dd><dt>Margin</dt><dd id="cal_margin">n/a</dd><dt>Mode</dt><dd id="cal_mode">n/a</dd>
-      </dl></article>
-      <article class="status-card compact-card"><p class="eyebrow">Plate Metrics</p><dl class="compact-dl">
-        <dt>Area</dt><dd id="cal_area">n/a</dd><dt>Aspect</dt><dd id="cal_aspect">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity">n/a</dd><dt>Box</dt><dd id="cal_bbox">n/a</dd><dt>Reject</dt><dd id="cal_reasons">none</dd>
-      </dl></article>
-      <article class="status-card compact-card"><p class="eyebrow">Detector Thresholds</p><dl class="compact-dl">
-        <dt>Area</dt><dd id="cal_area_threshold">n/a</dd><dt>Aspect</dt><dd id="cal_aspect_threshold">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity_threshold">n/a</dd><dt>Rotation</dt><dd id="cal_rotation_threshold">n/a</dd><dt>Confidence</dt><dd id="cal_confidence_threshold">n/a</dd>
-      </dl></article>
+    <section class="roi-preview-card">
+      <div class="title-row roi-title-row"><div><p class="eyebrow">OCR TEST</p><h2>Live OCR comparison</h2></div><span id="ocr_consensus" class="roi-box-label">Waiting...</span></div>
+      <div class="live-info-grid">
+        <article class="status-card compact-card"><p class="eyebrow">Rectified</p><dd id="ocr_rectified">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Grayscale</p><dd id="ocr_gray">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Enhanced</p><dd id="ocr_enhanced">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Threshold</p><dd id="ocr_threshold">—</dd></article>
+      </div>
+      <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR test waiting for a selected plate...</p>
     </section>
 
+    <section class="live-info-grid">
+      <article class="status-card compact-card"><p class="eyebrow">Live Status</p><dl class="compact-dl"><dt>Motion</dt><dd id="motion_state">UNKNOWN</dd><dt>Resolution</dt><dd id="resolution">unknown</dd><dt>FPS</dt><dd id="fps">0</dd><dt>Pipeline</dt><dd id="live_preview_pipeline">BGR</dd><dt>Orientation</dt><dd id="camera_orientation">n/a</dd><dt>Plate</dt><dd id="plate_found">Not detected</dd><dt>Box</dt><dd id="plate_box">n/a</dd></dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Selection</p><dl class="compact-dl"><dt>Candidates</dt><dd id="candidate_count">0</dd><dt>Selected</dt><dd id="selected_candidate">n/a</dd><dt>Rejected</dt><dd id="rejected_candidates">0</dd><dt>Confidence</dt><dd id="confidence">n/a</dd><dt>Quality</dt><dd id="cal_quality">n/a</dd><dt>Selection</dt><dd id="cal_selection_score">n/a</dd><dt>Zone</dt><dd id="cal_zone_score">n/a</dd><dt>Stable</dt><dd id="cal_stable">n/a</dd><dt>Margin</dt><dd id="cal_margin">n/a</dd><dt>Mode</dt><dd id="cal_mode">n/a</dd></dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Plate Metrics</p><dl class="compact-dl"><dt>Area</dt><dd id="cal_area">n/a</dd><dt>Aspect</dt><dd id="cal_aspect">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity">n/a</dd><dt>Box</dt><dd id="cal_bbox">n/a</dd><dt>Reject</dt><dd id="cal_reasons">none</dd></dl></article>
+      <article class="status-card compact-card"><p class="eyebrow">Detector Thresholds</p><dl class="compact-dl"><dt>Area</dt><dd id="cal_area_threshold">n/a</dd><dt>Aspect</dt><dd id="cal_aspect_threshold">n/a</dd><dt>Rect.</dt><dd id="cal_rectangularity_threshold">n/a</dd><dt>Rotation</dt><dd id="cal_rotation_threshold">n/a</dd><dt>Confidence</dt><dd id="cal_confidence_threshold">n/a</dd></dl></article>
+    </section>
     <p id="calibration_status" class="snapshot-status compact-status" aria-live="polite"></p>
   </main>
   <script>
     function setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
     function refreshRoi(box) {
-      const status = document.getElementById('roi_status');
-      if (!box) { status.textContent = 'Waiting for plate detection...'; setText('roi_box', 'No plate selected'); return; }
-      setText('roi_box', `Box ${box}`);
-      const stamp = Date.now();
-      for (const variant of ['original', 'rectified', 'gray', 'enhanced', 'threshold']) {
-        const image = document.getElementById(`roi_${variant}`);
-        if (image) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
-      }
-      status.textContent = 'ROI updated from the currently selected plate.';
+      if (!box) { setText('roi_box', 'No plate selected'); setText('roi_status', 'Waiting for plate detection...'); return; }
+      setText('roi_box', `Box ${box}`); const stamp = Date.now();
+      for (const variant of ['original','rectified','gray','enhanced','threshold']) { const image = document.getElementById(`roi_${variant}`); if (image) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`; }
+      setText('roi_status', 'ROI updated from the currently selected plate.');
     }
     async function refreshStatus() {
-      try {
-        const response = await fetch('/api/frame_info', { cache: 'no-store' }); const status = await response.json();
-        setText('motion_state', status.motion ?? 'UNKNOWN'); setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`); setText('fps', status.fps ?? 0);
-        setText('confidence', status.confidence === null || status.confidence === undefined ? 'n/a' : Number(status.confidence).toFixed(3)); setText('plate_found', status.plate_found ? 'Detected' : 'Not detected'); setText('plate_box', status.plate_box || 'n/a');
-        setText('candidate_count', status.candidate_count ?? 0); setText('selected_candidate', status.selected_candidate || 'n/a'); setText('rejected_candidates', status.rejected_candidates ?? 0); setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a'); setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase()); refreshRoi(status.plate_box);
-      } catch (error) { setText('motion_state', 'OFFLINE'); }
+      try { const response = await fetch('/api/frame_info', {cache:'no-store'}); const status = await response.json();
+        setText('motion_state', status.motion ?? 'UNKNOWN'); setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`); setText('fps', status.fps ?? 0); setText('confidence', status.confidence == null ? 'n/a' : Number(status.confidence).toFixed(3)); setText('plate_found', status.plate_found ? 'Detected' : 'Not detected'); setText('plate_box', status.plate_box || 'n/a'); setText('candidate_count', status.candidate_count ?? 0); setText('selected_candidate', status.selected_candidate || 'n/a'); setText('rejected_candidates', status.rejected_candidates ?? 0); setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a'); setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase()); refreshRoi(status.plate_box);
+      } catch (error) { setText('motion_state','OFFLINE'); }
     }
     async function refreshCalibration() {
-      try {
-        const response = await fetch('/api/plate_calibration', { cache: 'no-store' }); const calibration = await response.json(); const selected = calibration.selected_candidate; const thresholds = calibration.thresholds || {}; const quality = selected?.plate_quality;
-        setText('cal_quality', quality === undefined ? 'n/a' : `${(Number(quality) * 100).toFixed(0)}%`); setText('cal_selection_score', selected?.selection_score === undefined ? 'n/a' : Number(selected.selection_score).toFixed(3)); setText('cal_zone_score', selected?.zone_score === undefined ? 'n/a' : Number(selected.zone_score).toFixed(3)); setText('cal_stable', selected?.stable_selection === undefined ? 'n/a' : (selected.stable_selection ? 'YES' : 'NO')); setText('cal_margin', selected?.selection_margin === undefined ? 'n/a' : Number(selected.selection_margin).toFixed(3)); setText('cal_mode', selected?.selection_mode || 'n/a');
-        setText('cal_area', selected?.area ?? 'n/a'); setText('cal_aspect', selected?.aspect_ratio === undefined ? 'n/a' : Number(selected.aspect_ratio).toFixed(3)); setText('cal_rectangularity', selected?.rectangularity === undefined ? 'n/a' : Number(selected.rectangularity).toFixed(3)); setText('cal_bbox', selected?.bounding_box || 'n/a'); setText('cal_reasons', (calibration.candidates || []).map(c => c.rejection_reason).filter(Boolean).join(', ') || 'none');
-        setText('cal_area_threshold', `${thresholds.min_area ?? '?'}-${thresholds.max_area ?? '?'}`); setText('cal_aspect_threshold', `${Number(thresholds.min_aspect_ratio ?? 0).toFixed(2)}-${Number(thresholds.max_aspect_ratio ?? 0).toFixed(2)}`); setText('cal_rectangularity_threshold', thresholds.min_rectangularity ?? 'n/a'); setText('cal_rotation_threshold', thresholds.max_rotation === undefined ? 'n/a' : `${thresholds.max_rotation}°`); setText('cal_confidence_threshold', thresholds.confidence_threshold ?? 'n/a');
-      } catch (error) { setText('cal_mode', 'OFFLINE'); }
+      try { const response = await fetch('/api/plate_calibration', {cache:'no-store'}); const calibration = await response.json(); const selected = calibration.selected_candidate; const thresholds = calibration.thresholds || {}; const quality = selected?.plate_quality;
+        setText('cal_quality', quality == null ? 'n/a' : `${(Number(quality)*100).toFixed(0)}%`); setText('cal_selection_score', selected?.selection_score == null ? 'n/a' : Number(selected.selection_score).toFixed(3)); setText('cal_zone_score', selected?.zone_score == null ? 'n/a' : Number(selected.zone_score).toFixed(3)); setText('cal_stable', selected?.stable_selection == null ? 'n/a' : (selected.stable_selection ? 'YES':'NO')); setText('cal_margin', selected?.selection_margin == null ? 'n/a' : Number(selected.selection_margin).toFixed(3)); setText('cal_mode', selected?.selection_mode || 'n/a'); setText('cal_area', selected?.area ?? 'n/a'); setText('cal_aspect', selected?.aspect_ratio == null ? 'n/a' : Number(selected.aspect_ratio).toFixed(3)); setText('cal_rectangularity', selected?.rectangularity == null ? 'n/a' : Number(selected.rectangularity).toFixed(3)); setText('cal_bbox', selected?.bounding_box || 'n/a'); setText('cal_reasons', (calibration.candidates||[]).map(c=>c.rejection_reason).filter(Boolean).join(', ') || 'none'); setText('cal_area_threshold', `${thresholds.min_area ?? '?'}-${thresholds.max_area ?? '?'}`); setText('cal_aspect_threshold', `${Number(thresholds.min_aspect_ratio??0).toFixed(2)}-${Number(thresholds.max_aspect_ratio??0).toFixed(2)}`); setText('cal_rectangularity_threshold', thresholds.min_rectangularity ?? 'n/a'); setText('cal_rotation_threshold', thresholds.max_rotation == null ? 'n/a' : `${thresholds.max_rotation}°`); setText('cal_confidence_threshold', thresholds.confidence_threshold ?? 'n/a');
+      } catch (error) { setText('cal_mode','OFFLINE'); }
     }
-    async function saveCalibration() { const label = document.getElementById('calibration_status'); const response = await fetch('/api/plate_calibration/save', { method: 'POST' }); const payload = await response.json(); label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error; }
-    async function saveSnapshot() { const label = document.getElementById('snapshot_status'); const response = await fetch('/api/snapshot', { method: 'POST' }); const payload = await response.json(); label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error; }
-    document.getElementById('snapshot_button').addEventListener('click', saveSnapshot); document.getElementById('calibration_button').addEventListener('click', saveCalibration); refreshStatus(); refreshCalibration(); setInterval(() => { refreshStatus(); refreshCalibration(); }, 1000);
+    async function refreshOcr() {
+      try { const response = await fetch('/api/plate_ocr', {cache:'no-store'}); const payload = await response.json();
+        if (!payload.available) { setText('ocr_status', payload.error || 'OCR unavailable'); return; }
+        for (const key of ['rectified','gray','enhanced','threshold']) setText(`ocr_${key}`, payload.outputs?.[key]?.text || '—');
+        setText('ocr_consensus', payload.consensus ? `${payload.consensus} (${Math.round(payload.agreement*100)}%)` : 'No consensus'); setText('ocr_status', 'OCR comparison active.');
+      } catch (error) { setText('ocr_status','OCR offline'); }
+    }
+    async function saveCalibration() { const label=document.getElementById('calibration_status'); const response=await fetch('/api/plate_calibration/save',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
+    async function saveSnapshot() { const label=document.getElementById('snapshot_status'); const response=await fetch('/api/snapshot',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
+    document.getElementById('snapshot_button').addEventListener('click',saveSnapshot); document.getElementById('calibration_button').addEventListener('click',saveCalibration); refreshStatus(); refreshCalibration(); refreshOcr(); setInterval(()=>{refreshStatus();refreshCalibration();refreshOcr();},1500);
   </script>
 </body>
 </html>

@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.7.0"
+    assert main.get_version() == "0.7.1"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.7.0" in output
+    assert "GateKeeper AI v0.7.1" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -517,7 +517,7 @@ def test_default_config_contains_plate_detector_thresholds():
         "aspect_ratio_min": 3.5,
         "aspect_ratio_max": 6.5,
         "min_area": 2500,
-        "max_area": 70000,
+        "max_area": 150000,
         "min_rectangularity": 0.80,
         "max_rotation": 15,
         "border_margin": 20,
@@ -615,7 +615,7 @@ def test_display_manager_window_creation_and_close(monkeypatch):
 def test_index_html_displays_release_and_no_pipeline_selection_buttons():
     html = Path("src/gatekeeper/web/templates/index.html").read_text(encoding="utf-8")
 
-    assert "GateKeeper AI 0.7.0" in html
+    assert "GateKeeper AI 0.7.1" in html
     assert "Plate Calibration" in html
     assert "Save Calibration Frame" in html
     assert "Live Preview Pipeline: BGR" in html
@@ -696,7 +696,7 @@ def test_live_preview_server_routes_use_shared_state(monkeypatch):
     assert health.get_data(as_text=True) == "OK\n"
     index = client.get("/")
     assert index.status_code == 200
-    assert "GateKeeper AI 0.7.0" in index.get_data(as_text=True)
+    assert "GateKeeper AI 0.7.1" in index.get_data(as_text=True)
     status = client.get("/api/status").json
     assert status["motion_state"] == main.MotionEventManager.IDLE
     assert status["resolution"] == "30x20"
@@ -1195,7 +1195,7 @@ def test_api_camera_ignores_pipeline_changes_but_keeps_orientation(tmp_path, mon
     pytest.importorskip("yaml")
     config_path = tmp_path / "config.yaml"
     config_path.write_text("camera:\n  pipeline: rgb\n  rotation: 0\n  flip_horizontal: false\n  flip_vertical: false\npreview:\n  pipeline: bgr\n", encoding="utf-8")
-    state = main.LivePreviewState(version="0.7.0", git_commit="abc123")
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
     state.config_path = config_path
     state.camera_pipeline = "rgb"
     server = main.LivePreviewServer(state=state)
@@ -1225,7 +1225,7 @@ def test_live_preview_conversion_does_not_change_master_motion_plate_snapshot_or
         return b"jpeg"
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
-    state = main.LivePreviewState(version="0.7.0", git_commit="abc123")
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
     state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
     pipeline = state.pipeline_snapshot()
 
@@ -1287,7 +1287,7 @@ def test_plate_calibration_json_and_save_route(monkeypatch, tmp_path):
     np = pytest.importorskip("numpy")
     candidate = main.PlateCandidate((2, 3, 20, 8), 0.8, object(), 2.5, 160.0, 0.9, 0.0, True, "", True)
     detection = main.PlateDetection((2, 3, 20, 8), 0.8, object(), candidates=(candidate,))
-    state = main.LivePreviewState(version="0.7.0", git_commit="abc123")
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
     state.plate_calibration_config = {"enabled": True, "save_frames": True}
     state.detector_thresholds = {"min_area": 100, "max_area": 1000, "aspect_ratio_min": 2.0, "aspect_ratio_max": 6.0, "min_rectangularity": 0.8, "confidence_threshold": 0.7}
     monkeypatch.setattr(main, "IMAGE_DIR", tmp_path / "images")
@@ -1326,8 +1326,8 @@ def test_live_preview_color_pipeline_unchanged_by_calibration():
     np = pytest.importorskip("numpy")
     frame = np.zeros((24, 24, 3), dtype=np.uint8)
     frame[:, :] = (255, 0, 0)
-    plain = main.LivePreviewState(version="0.7.0", git_commit="abc123")
-    calibrated = main.LivePreviewState(version="0.7.0", git_commit="abc123")
+    plain = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    calibrated = main.LivePreviewState(version="0.7.1", git_commit="abc123")
     calibrated.plate_calibration_config = {"enabled": True}
 
     plain.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="24x24")
@@ -1342,3 +1342,52 @@ def test_motion_detection_unchanged_thresholds_and_state():
     assert detector.min_area == 123
     assert detector.threshold == 45
     assert detector.previous_frame is None
+
+
+def test_plate_detector_default_max_area_is_150000_only_area_change():
+    detector = main.PlateDetector()
+
+    assert detector.min_area == 2500.0
+    assert detector.max_area == 150000.0
+    assert detector.min_aspect_ratio == 3.5
+    assert detector.max_aspect_ratio == 6.5
+    assert detector.min_rectangularity == 0.80
+    assert detector.max_rotation == 15.0
+    assert detector.confidence_threshold == 0.70
+
+
+def test_plate_calibration_overlay_draws_selected_prominently_and_threshold_summary():
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((120, 220, 3), dtype=np.uint8)
+    selected = main.PlateCandidate((20, 70, 80, 20), 0.912, object(), 4.0, 1600.0, 0.91, 2.0, True, "", True)
+    valid = main.PlateCandidate((120, 70, 70, 20), 0.8, object(), 3.5, 1400.0, 0.9, 1.0, True, "", False)
+    rejected = main.PlateCandidate((20, 20, 50, 15), 0.2, object(), 3.3, 750.0, 0.5, 3.0, False, "rectangularity")
+    detection = main.PlateDetection(selected.bounding_box, selected.confidence, object(), candidates=(selected, valid, rejected))
+
+    annotated = main.annotate_calibration_frame(frame, detection, [selected, valid, rejected], thresholds={"min_area": 2500, "max_area": 150000, "min_aspect_ratio": 3.5, "max_aspect_ratio": 6.5, "min_rectangularity": 0.8, "max_rotation": 15, "confidence_threshold": 0.7})
+
+    assert annotated[70, 20, 1] > 0  # selected green border
+    assert annotated[70, 120, 0] > 0 and annotated[70, 120, 1] > 0  # valid yellow border
+    assert annotated[20, 20, 0] > 0  # rejected red border
+    assert annotated[68, 20, 1] > 0  # prominent selected border is thicker than normal
+    assert annotated.sum() > 0
+
+
+def test_plate_calibration_endpoint_exposes_live_rejected_count_and_thresholds():
+    np = pytest.importorskip("numpy")
+    selected = main.PlateCandidate((1, 1, 20, 6), 0.8, object(), 3.33, 120.0, 0.9, 0.0, True, "", True)
+    rejected = main.PlateCandidate((30, 1, 20, 6), 0.2, object(), 3.33, 120.0, 0.5, 0.0, False, "confidence")
+    detection = main.PlateDetection(selected.bounding_box, selected.confidence, object(), candidates=(selected, rejected))
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.plate_calibration_config = {"enabled": True}
+    state.detector_thresholds = {"min_area": 2500, "max_area": 150000, "aspect_ratio_min": 3.5, "aspect_ratio_max": 6.5, "min_rectangularity": 0.8, "max_rotation": 15, "confidence_threshold": 0.7}
+
+    state.update_frame(np.zeros((40, 80, 3), dtype=np.uint8), motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="80x40", plate_detection=detection)
+    payload = state.plate_calibration_snapshot()
+
+    assert payload["candidate_count"] == 2
+    assert payload["selected_candidate"]["bounding_box"] == selected.bounding_box
+    assert len([c for c in payload["candidates"] if c["rejected"]]) == 1
+    assert payload["candidates"][1]["rejection_reason"] == "confidence"
+    assert payload["thresholds"]["max_area"] == 150000
+    assert payload["thresholds"]["max_rotation"] == 15

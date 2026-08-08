@@ -61,7 +61,7 @@ class PlateDetector:
         min_aspect_ratio: float = 3.5,
         max_aspect_ratio: float = 6.5,
         min_area: float = 2500.0,
-        max_area: float = 70000.0,
+        max_area: float = 150000.0,
         confidence_threshold: float = 0.70,
         min_rectangularity: float = 0.80,
         max_rotation: float = 15.0,

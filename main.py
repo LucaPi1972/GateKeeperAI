@@ -327,7 +327,7 @@ class LivePreviewState:
         """Store the latest captured frame and metadata for web consumers."""
         now = datetime.now(timezone.utc).isoformat()
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
-        encoded_frame = self.encode_preview_jpeg(frame)
+        encoded_frame = None
         encoded_plate = encoder(plate_crop) if plate_crop is not None else None
         master = FrameMaster.from_frame(frame, pipeline=self.camera_pipeline, rotation=int(self.camera_orientation.get("rotation", 0) or 0), flip_horizontal=bool(self.camera_orientation.get("flip_horizontal", False)), flip_vertical=bool(self.camera_orientation.get("flip_vertical", False)))
         consumers = {name: master for name in ("preview", "snapshot", "motion", "plate")}
@@ -336,7 +336,6 @@ class LivePreviewState:
         candidates = list(plate_candidates or getattr(plate_detection, "candidates", []) or [])
         with self._lock:
             self._frame = frame
-            self._frame_jpeg = encoded_frame
             self._frame_master = master
             self._consumer_frames = consumers
             self.width = width
@@ -354,8 +353,14 @@ class LivePreviewState:
             self.candidates = candidates
             if self.plate_calibration_config.get("enabled"):
                 all_candidates = candidates or list(getattr(plate_detection, "candidates", []) or [])
-                self._calibration_frame = annotate_calibration_frame(frame, plate_detection, all_candidates)
+                self._calibration_frame = annotate_calibration_frame(frame, plate_detection, all_candidates, thresholds=self.calibration_thresholds())
                 self._calibration_jpeg = encoder(self._calibration_frame)
+                encoded_frame = self.encode_preview_jpeg(self._calibration_frame)
+            else:
+                self._calibration_frame = None
+                self._calibration_jpeg = None
+                encoded_frame = self.encode_preview_jpeg(frame)
+            self._frame_jpeg = encoded_frame
             now_monotonic = time.monotonic()
             if now_monotonic - self._last_master_log >= 10:
                 snapshot = self.pipeline_snapshot()
@@ -552,6 +557,7 @@ class LivePreviewState:
             "min_aspect_ratio": thresholds.get("min_aspect_ratio", thresholds.get("aspect_ratio_min")),
             "max_aspect_ratio": thresholds.get("max_aspect_ratio", thresholds.get("aspect_ratio_max")),
             "min_rectangularity": thresholds.get("min_rectangularity"),
+            "max_rotation": thresholds.get("max_rotation"),
             "confidence_threshold": thresholds.get("confidence_threshold"),
         }
 
@@ -1351,22 +1357,61 @@ def plate_candidate_metadata(candidate: Any, selected_box: tuple[int, int, int, 
     }
 
 
-def annotate_calibration_frame(frame: Any, plate_detection: PlateDetection | None = None, candidates: list[Any] | None = None) -> Any:
+def annotate_calibration_frame(
+    frame: Any,
+    plate_detection: PlateDetection | None = None,
+    candidates: list[Any] | None = None,
+    thresholds: dict[str, Any] | None = None,
+) -> Any:
     """Draw plate calibration candidate overlays on a copy of FRAME_MASTER."""
     import cv2
 
     annotated = frame.copy() if hasattr(frame, "copy") else frame
     selected_box = plate_detection.bounding_box if plate_detection is not None else None
     items = list(candidates or getattr(plate_detection, "candidates", []) or [])
+    selected_count = 0
+    rejected_count = 0
     for candidate in items:
         data = plate_candidate_metadata(candidate, selected_box)
+        selected_count += 1 if data["selected"] else 0
+        rejected_count += 0 if data["selected"] else 1
         x, y, w, h = [int(v) for v in data["bounding_box"]]
         color = (0, 255, 0) if data["selected"] else ((255, 255, 0) if data["rejection_reason"] == "not_selected" else (255, 0, 0))
-        cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 2)
-        label = f'C:{data["confidence"]:.2f} AR:{data["aspect_ratio"]:.2f} A:{data["area"]:.0f} R:{data["rectangularity"]:.2f}'
-        reason = "selected" if data["selected"] else data["rejection_reason"]
-        cv2.putText(annotated, label, (x, max(16, y - 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-        cv2.putText(annotated, reason, (x, max(32, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        thickness = 4 if data["selected"] else 2
+        cv2.rectangle(annotated, (x, y), (x + w, y + h), color, thickness)
+        lines = [
+            f'A:{data["area"]:.0f}',
+            f'AR:{data["aspect_ratio"]:.2f}',
+            f'R:{data["rectangularity"]:.2f}',
+            f'C:{data["confidence"]:.3f}',
+        ]
+        if data["selected"]:
+            lines.extend(["SELECTED PLATE", f'Confidence: {data["confidence"]:.3f}'])
+        elif data["rejection_reason"] and data["rejection_reason"] != "not_selected":
+            lines.append(f'REJECT:{data["rejection_reason"]}')
+        elif data["rejection_reason"] == "not_selected":
+            lines.append("VALID")
+        for idx, label in enumerate(lines):
+            yy = max(16, y - 60 + idx * 14)
+            if yy < 16 + idx * 14:
+                yy = min(y + h + 16 + idx * 14, annotated.shape[0] - 4) if hasattr(annotated, "shape") else y + h + 16 + idx * 14
+            cv2.putText(annotated, label, (x, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+
+    t = thresholds or {}
+    summary = [
+        "PLATE CALIBRATION",
+        f"Candidates: {len(items)}",
+        f"Selected: {selected_count}",
+        f"Rejected: {rejected_count}",
+        f"Min area: {t.get('min_area', 'n/a')}",
+        f"Max area: {t.get('max_area', 'n/a')}",
+        f"Aspect: {float(t.get('min_aspect_ratio') or 0):.2f} - {float(t.get('max_aspect_ratio') or 0):.2f}",
+        f"Rectangularity: {float(t.get('min_rectangularity') or 0):.2f}",
+        f"Rotation: {int(float(t.get('max_rotation') or 0))}°",
+        f"Confidence: {float(t.get('confidence_threshold') or 0):.2f}",
+    ]
+    for i, line in enumerate(summary):
+        cv2.putText(annotated, line, (10, 22 + i * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
     return annotated
 
 
@@ -1895,7 +1940,7 @@ def main(argv: list[str] | None = None) -> int:
         min_aspect_ratio=float(plate_config.get("aspect_ratio_min", 3.5)),
         max_aspect_ratio=float(plate_config.get("aspect_ratio_max", 6.5)),
         min_area=float(plate_config.get("min_area", 2500)),
-        max_area=float(plate_config.get("max_area", 70000)),
+        max_area=float(plate_config.get("max_area", 150000)),
         confidence_threshold=float(plate_config.get("confidence_threshold", 0.70)),
         min_rectangularity=float(plate_config.get("min_rectangularity", 0.80)),
         max_rotation=float(plate_config.get("max_rotation", 15)),

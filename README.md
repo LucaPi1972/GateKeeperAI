@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.7.0 starts the license-plate calibration phase for observing the existing PlateDetector with a printed Italian plate while keeping OCR, whitelist, GPIO/access control, Live Preview color handling, Motion Detection, and the SQLite schema unchanged.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.7.1 adds live license-plate calibration for observing the existing PlateDetector with a printed Italian plate while keeping OCR, whitelist, GPIO/access control, Live Preview color handling, Motion Detection, and the SQLite schema unchanged.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.7.0
+ GateKeeper AI v0.7.1
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -66,11 +66,11 @@ GateKeeper records runtime metadata for the shared frame: frame id, shape, dtype
 
 ## Plate Calibration
 
-Release 0.7.0 adds a configurable plate calibration mode for observing the existing `PlateDetector`; it does not add OCR, whitelist matching, GPIO/access control, camera color-pipeline changes, Live Preview behavior changes, Motion Detection changes, or SQLite schema changes.
+Release 0.7.1 adds a live HTTP Plate Calibration overlay for observing the existing `PlateDetector`; it does not add OCR, whitelist matching, GPIO/access control, camera color-pipeline changes, Live Preview behavior changes, Motion Detection changes, or SQLite schema changes.
 
-When `plate_calibration.enabled` is true, frames processed during motion expose candidate metadata through `/api/plate_calibration` and the web interface. Each candidate reports bounding box, area, aspect ratio, rectangularity, confidence, selected/rejected state, and explicit rejection reasons such as `area_too_small`, `area_too_large`, `aspect_ratio`, `rectangularity`, `invalid_geometry`, `confidence`, or `not_selected`.
+When `plate_calibration.enabled` is true, the existing HTTP Live Preview annotates a copy of the same current frame evaluated by `PlateDetector`; motion detection, plate detection, snapshots, and diagnostics continue to use their unmodified frames. Frames processed during motion expose candidate metadata through `/api/plate_calibration` and the web interface. Each candidate reports bounding box, area, aspect ratio, rectangularity, confidence, selected/rejected state, and explicit rejection reasons such as `area_too_small`, `area_too_large`, `aspect_ratio`, `rectangularity`, `invalid_geometry`, `confidence`, or `not_selected`.
 
-Annotated calibration frames are saved as `images/calibration_*.jpg` and use green for the selected candidate, yellow for valid candidates that were not selected, and red for rejected candidates. Existing selected plate crops continue to be saved as `images/plate_*.jpg`, and selected crops continue to be inserted into the existing `plates` table. The Plate Calibration panel exposes the existing thresholds as read-only values: `min_area`, `max_area`, `min_aspect_ratio`, `max_aspect_ratio`, `min_rectangularity`, and `confidence_threshold`; no tuning sliders or automatic optimization are included in this release.
+The **Save Calibration Frame** button saves the current annotated calibration frame as `images/calibration_*.jpg` and use green for the selected candidate, yellow for valid candidates that were not selected, and red for rejected candidates. Existing selected plate crops continue to be saved as `images/plate_*.jpg`, and selected crops continue to be inserted into the existing `plates` table. The Plate Calibration panel exposes the existing thresholds as read-only values: `min_area`, `max_area`, `min_aspect_ratio`, `max_aspect_ratio`, `min_rectangularity`, and `confidence_threshold`; no tuning sliders or automatic optimization are included in this release.
 
 Manual calibration sequence:
 
@@ -327,7 +327,7 @@ plate_detector:
   aspect_ratio_min: 3.5
   aspect_ratio_max: 6.5
   min_area: 2500
-  max_area: 70000
+  max_area: 150000
   min_rectangularity: 0.80
   max_rotation: 15
   border_margin: 20

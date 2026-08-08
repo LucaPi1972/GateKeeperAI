@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- Increase only the PlateDetector `max_area` default and configured value from `70000` to `150000`; all other detector thresholds remain unchanged.
+- Add live Plate Calibration overlays to the existing HTTP Live Preview using the same current FRAME_MASTER-derived frame already evaluated by PlateDetector, without reopening the camera or creating another stream.
+- Draw selected, valid-not-selected, and rejected candidates with metrics, rejection reasons, selected-plate emphasis, and runtime threshold summaries.
+- Update the Plate Calibration web panel and save action so calibration state refreshes continuously and saved calibration frames use the current annotated preview frame.
+
 ## 0.7.0
 
 - Start the license-plate calibration phase for observing the existing PlateDetector with printed Italian plates.

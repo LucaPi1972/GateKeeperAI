@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- Start the license-plate calibration phase for observing the existing PlateDetector with printed Italian plates.
+- Add configurable `plate_calibration` mode, candidate metadata, explicit rejection reasons, selected-candidate logging, and annotated `images/calibration_*.jpg` saves while preserving existing `images/plate_*.jpg` crops.
+- Add `/api/plate_calibration`, manual calibration-frame saving, and a Plate Calibration web panel with read-only existing detector thresholds.
+- Keep OCR, whitelist, GPIO/access control, Live Preview color handling, motion detection, and SQLite schema unchanged.
+
 ## 0.6.11
 
 - Restore the HTTP Live Preview color behavior from Release 0.6.9 using the fixed preview-only red/blue swap configuration.

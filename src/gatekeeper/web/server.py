@@ -88,6 +88,19 @@ class LivePreviewServer:
                 payload = json.dumps(self.state.frame_info()).encode("utf-8")
                 start_response("200 OK", [("Content-Type", "application/json")])
                 return [payload]
+            if path == "/api/plate_calibration":
+                payload = json.dumps(self.state.plate_calibration_snapshot()).encode("utf-8")
+                start_response("200 OK", [("Content-Type", "application/json")])
+                return [payload]
+            if path == "/api/plate_calibration/save" and environ.get("REQUEST_METHOD") == "POST":
+                try:
+                    saved = self.state.save_current_calibration_frame()
+                    payload = json.dumps({"path": str(saved), "filename": saved.name}).encode("utf-8")
+                    start_response("200 OK", [("Content-Type", "application/json")])
+                except RuntimeError as exc:
+                    payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                    start_response("409 Conflict", [("Content-Type", "application/json")])
+                return [payload]
             if path == "/api/snapshot" and environ.get("REQUEST_METHOD") == "POST":
                 try:
                     snapshot = self.state.save_snapshot()

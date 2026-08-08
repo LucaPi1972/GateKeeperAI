@@ -31,6 +31,18 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     def frame_info():
         return jsonify(state.frame_info())
 
+    @app.get("/api/plate_calibration")
+    def plate_calibration():
+        return jsonify(state.plate_calibration_snapshot())
+
+    @app.post("/api/plate_calibration/save")
+    def save_plate_calibration():
+        try:
+            path = state.save_current_calibration_frame()
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({"path": str(path), "filename": path.name})
+
     @app.post("/api/snapshot")
     def snapshot():
         try:

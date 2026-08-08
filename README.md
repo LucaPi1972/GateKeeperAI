@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.7 establishes a single FRAME_MASTER pipeline so preview, diagnostics, snapshots, motion detection, and plate detection all consume the same processed frame.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.11 restores the Release 0.6.9 HTTP Live Preview color behavior while keeping pipeline selection disabled in the web UI.
 
 ## Version
 
@@ -61,7 +61,7 @@ Motion Detector / Plate Detector / HTTP Preview / Snapshot / Diagnostics / Futur
 
 ### Pipeline verification
 
-GateKeeper records runtime metadata for the shared frame: frame id, shape, dtype, pipeline, rotation, and horizontal/vertical flip flags. `/api/pipeline` exposes the real runtime state for camera, preview, motion, plate, snapshot, diagnostics, and JPEG consumers. Startup validates the shared path and logs `FRAME PIPELINE VERIFIED` when the consumers agree, or `FRAME PIPELINE ERROR` / `FRAME PIPELINE MISMATCH` if one differs. Every 10 seconds the camera logs a `FRAME MASTER` summary with frame id, shape, pipeline, rotation, flips, and consumers.
+GateKeeper records runtime metadata for the shared frame: frame id, shape, dtype, pipeline, rotation, and horizontal/vertical flip flags. `/api/pipeline` exposes the real runtime state for camera, preview, motion, plate, snapshot, diagnostics, and JPEG consumers as read-only metadata. Startup validates the shared path and logs `FRAME PIPELINE VERIFIED` when the consumers agree, or `FRAME PIPELINE ERROR` / `FRAME PIPELINE MISMATCH` if one differs. Every 10 seconds the camera logs a `FRAME MASTER` summary with frame id, shape, pipeline, rotation, flips, and consumers.
 
 ## Runtime directory, database, and PID file
 
@@ -281,7 +281,7 @@ Orientation is applied immediately after frame acquisition, so Camera consumers,
 
 ### Color pipeline
 
-Picamera2 is configured for `RGB888`. GateKeeper treats captured frames as RGB internally and converts RGB to BGR only at JPEG/OpenCV file encoding boundaries. Startup logs the camera pixel format, internal frame format, and JPEG encoder format to help catch double-conversion mistakes.
+Picamera2 is configured for `RGB888`. GateKeeper keeps the Release 0.6.9 Live Preview configuration for HTTP preview output and displays the active preview pipeline as read-only metadata; users cannot change the pipeline from the web UI. Startup logs the camera pixel format, internal frame format, and JPEG encoder format to help catch double-conversion mistakes.
 
 ### Detector thresholds and debug candidates
 
@@ -344,4 +344,4 @@ The runtime path is deterministic:
 Picamera2 -> capture_array() -> RAW_FRAME -> CameraManager.apply_pipeline() -> CameraManager.apply_rotation() -> CameraManager.apply_flip() -> FRAME_MASTER -> Motion -> Plate Detector -> HTTP Preview -> Snapshot -> Future OCR
 ```
 
-Live preview and snapshots use `CameraManager.encode_jpeg(FRAME_MASTER)` and never regenerate colors, rotation, or flips independently. `/api/pipeline` exposes frame object IDs, pipeline settings, and CRC32 checksums for runtime verification. The diagnostics page includes a **Runtime Verification** section showing those IDs, checksums, pipeline settings, and PASS/FAIL status.
+Live preview reproduces the Release 0.6.9 preview-only red/blue swap behavior, and snapshots use `CameraManager.encode_jpeg(FRAME_MASTER)` without preview-only changes. `/api/pipeline` exposes frame object IDs, pipeline settings, and CRC32 checksums for runtime verification. The diagnostics page includes a **Runtime Verification** section showing those IDs, checksums, pipeline settings, and PASS/FAIL status.

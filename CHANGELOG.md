@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.5
+
+- Keep the proven 0.7.4 full-frame contour detector; the Reading Zone is now a soft ranking signal instead of a hard filter.
+- Add a small central Reading Zone preference with a conservative 15% ranking weight so candidates outside the guide are never discarded solely for position.
+- Add a near-valid fallback selection path when strict thresholds produce no selected candidate, while still rejecting grossly small, oversized, badly proportioned, or strongly rotated candidates.
+- Expose `zone_score` and `selection_score` for every candidate and show both metrics in the HTTP Plate Calibration panel.
+- Keep the 0.7.4 detector thresholds unchanged: `min_area: 2500`, `max_area: 150000`, aspect ratio `3.5-6.5`, rectangularity `0.80`, rotation `15`, and confidence threshold `0.70`.
+- Keep camera color handling, Live Preview BGR behavior, FRAME_MASTER, Motion Detection, diagnostics, snapshots, and OCR scope unchanged.
+
 ## 0.7.4
 
 - Restore the proven 0.7.2 PlateDetector contour pipeline after the 0.7.3 isolated Reading Zone test proved too restrictive in real use.

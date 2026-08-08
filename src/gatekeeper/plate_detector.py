@@ -184,15 +184,18 @@ class PlateDetector:
         return round(max(0.0, min(1.0, geometry * (1.0 - self.reading_zone_weight - stability_weight) + position_and_stability + stability_score * stability_weight)), 3)
 
     def _prefer_previous_candidate(self, ranked: list[PlateCandidate]) -> PlateCandidate | None:
-        """Keep the previous plate when it remains close enough to the leader."""
+        """Keep the previous plate when a nearby candidate remains competitive."""
         if self._previous_selected_bbox is None or not ranked:
             return None
         previous = max(
-            (candidate for candidate in ranked if candidate.bounding_box == self._previous_selected_bbox),
-            key=lambda candidate: candidate.selection_score,
+            ranked,
+            key=lambda candidate: self._iou(candidate.bounding_box, self._previous_selected_bbox),
             default=None,
         )
         if previous is None:
+            return None
+        overlap = self._iou(previous.bounding_box, self._previous_selected_bbox)
+        if overlap < 0.25:
             return None
         leader = ranked[0]
         if previous.selection_score >= leader.selection_score - self.stability_window:

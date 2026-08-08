@@ -57,6 +57,9 @@ plate_detector:
   max_rotation: 15
   border_margin: 20
 
+preview:
+  swap_rb: auto
+
 debug:
   enabled: true
   live_preview: true

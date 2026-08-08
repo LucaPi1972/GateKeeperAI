@@ -96,7 +96,7 @@ class FakeMotionDetector:
 
 
 def test_version_comes_from_version_file():
-    assert main.get_version() == "0.6.7"
+    assert main.get_version() == "0.6.8"
     assert main.get_version() == main.VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -106,7 +106,7 @@ def test_startup_banner_contains_release_version(capsys):
 
     output = capsys.readouterr().out
 
-    assert "GateKeeper AI v0.6.7" in output
+    assert "GateKeeper AI v0.6.8" in output
     assert "Build: development" in output
     assert f"Camera backend: {main.CAMERA_BACKEND}" in output
 
@@ -378,6 +378,12 @@ def test_run_until_interrupted_captures_frames_detects_motion_and_stops_cleanly(
     assert rows[1][4] is not None
 
 
+def test_default_config_contains_preview_settings():
+    config = main.load_config()
+
+    assert config["preview"] == {"swap_rb": "auto"}
+
+
 def test_default_config_contains_debug_vision_settings():
     config = main.load_config()
 
@@ -533,7 +539,7 @@ def test_display_manager_draws_green_plate_overlay_and_snapshot(tmp_path, monkey
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 180, 3), dtype=np.uint8)
     detection = main.PlateDetection((25, 35, 80, 20), 0.85, object())
-    display = main.DisplayManager(enabled=False, version="0.6.7", git_commit="abc123")
+    display = main.DisplayManager(enabled=False, version="0.6.8", git_commit="abc123")
     monkeypatch.setattr(
         "src.gatekeeper.display_manager.SNAPSHOT_DIR", tmp_path / "snapshots"
     )
@@ -615,7 +621,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
     frame = np.zeros((20, 30, 3), dtype=np.uint8)
     crop = np.zeros((5, 10, 3), dtype=np.uint8)
     detection = main.PlateDetection((1, 2, 10, 5), 0.77, object())
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
 
     state.update_frame(
         frame,
@@ -629,7 +635,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 
     status = state.snapshot()
     assert status == {
-        "version": "0.6.7",
+        "version": "0.6.8",
         "camera": main.CAMERA_BACKEND,
         "motion_state": main.MotionEventManager.MOTION_STARTED,
         "fps": 5.5,
@@ -654,7 +660,7 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
 def test_live_preview_server_routes_use_shared_state(monkeypatch):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.update_frame(
         np.zeros((20, 30, 3), dtype=np.uint8),
         motion_state=main.MotionEventManager.IDLE,
@@ -672,7 +678,7 @@ def test_live_preview_server_routes_use_shared_state(monkeypatch):
     assert health.get_data(as_text=True) == "OK\n"
     index = client.get("/")
     assert index.status_code == 200
-    assert "GateKeeper AI 0.6.7" in index.get_data(as_text=True)
+    assert "GateKeeper AI 0.6.8" in index.get_data(as_text=True)
     status = client.get("/api/status").json
     assert status["motion_state"] == main.MotionEventManager.IDLE
     assert status["resolution"] == "30x20"
@@ -698,7 +704,7 @@ def test_live_preview_overlay_crosshair_grid_bbox_and_frame_info_snapshot(tmp_pa
     np = pytest.importorskip("numpy")
     frame = np.zeros((90, 120, 3), dtype=np.uint8)
     detection = main.PlateDetection((10, 20, 30, 15), 0.88, object())
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.display_config = {
         "show_crosshair": True,
         "show_grid": True,
@@ -738,7 +744,7 @@ def test_live_preview_overlay_crosshair_grid_bbox_and_frame_info_snapshot(tmp_pa
 def test_live_preview_server_frame_info_and_snapshot_route(monkeypatch, tmp_path):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.update_frame(
         np.zeros((20, 30, 3), dtype=np.uint8),
         motion_state=main.MotionEventManager.IDLE,
@@ -856,7 +862,7 @@ def test_plate_detector_filters_rejected_and_selects_candidate():
 def test_live_preview_server_debug_endpoints(monkeypatch):
     pytest.importorskip("flask")
     np = pytest.importorskip("numpy")
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.update_frame(np.zeros((20, 30, 3), dtype=np.uint8), motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20")
     server = main.LivePreviewServer(state=state)
     monkeypatch.setattr(main.threading.Thread, "start", lambda self: None)
@@ -900,7 +906,7 @@ def test_live_preview_state_persists_pipeline_orientation_and_controls(tmp_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("camera:\n  pipeline: rgb\n  rotation: 0\n  flip_horizontal: false\n  flip_vertical: false\n", encoding="utf-8")
     camera = main.CameraManager(10, 8, 1)
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.config_path = config_path
     state.camera_manager = camera
 
@@ -922,7 +928,7 @@ def test_live_preview_state_persists_pipeline_orientation_and_controls(tmp_path)
 def test_live_preview_server_diagnostics_page_and_camera_update(monkeypatch, tmp_path):
     pytest.importorskip("flask")
     pytest.importorskip("yaml")
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     state.config_path = tmp_path / "config.yaml"
     state.config_path.write_text("camera:\n  pipeline: rgb\n", encoding="utf-8")
     state.diagnostics_dir = tmp_path
@@ -935,7 +941,9 @@ def test_live_preview_server_diagnostics_page_and_camera_update(monkeypatch, tmp
     update = client.post("/api/camera", json={"pipeline": "bgr", "flip_vertical": True})
 
     assert page.status_code == 200
-    assert "Use this pipeline" in page.get_data(as_text=True)
+    assert "Camera Calibration" in page.get_data(as_text=True)
+    assert "Sensor Calibration" in page.get_data(as_text=True)
+    assert "Runtime Preview" in page.get_data(as_text=True)
     assert "Current Runtime Pipeline" in page.get_data(as_text=True)
     assert update.status_code == 200
     pipeline = client.get("/api/pipeline")
@@ -950,7 +958,7 @@ def test_snapshot_motion_and_plate_use_selected_pipeline(tmp_path):
     frame = np.zeros((20, 30, 3), dtype=np.uint8)
     frame[:, :] = (1, 2, 3)
     processed = main.apply_color_pipeline(frame, "swap_rb")
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
     monkeypatch_dir = tmp_path / "snapshots"
     original_snapshot = main.SNAPSHOT_DIR
     main.SNAPSHOT_DIR = monkeypatch_dir
@@ -1018,7 +1026,7 @@ def test_startup_metadata_logs_frame_pipeline(caplog, tmp_path):
     }
 
     with caplog.at_level(logging.INFO, logger="gatekeeper"):
-        main.log_startup_metadata(logging.getLogger("gatekeeper"), "0.6.7", "abc123", camera_info, "now", image_path)
+        main.log_startup_metadata(logging.getLogger("gatekeeper"), "0.6.8", "abc123", camera_info, "now", image_path)
 
     assert "FRAME PIPELINE" in caplog.text
     assert "Picamera2" in caplog.text
@@ -1029,7 +1037,7 @@ def test_startup_metadata_logs_frame_pipeline(caplog, tmp_path):
 def test_runtime_consumers_share_frame_master_identity_and_checksum():
     np = pytest.importorskip("numpy")
     frame_master = np.arange(27, dtype=np.uint8).reshape((3, 3, 3))
-    state = main.LivePreviewState(version="0.6.7", git_commit="abc123")
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
 
     state.update_frame(
         frame_master,
@@ -1083,3 +1091,45 @@ def test_motion_and_plate_receive_frame_master_object():
     assert motion.calls == 1
     assert plate.calls == 1
     assert manager.last_plate_crop is frame_master
+
+
+def test_preview_swap_rb_is_isolated_from_snapshot(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame_master = np.zeros((16, 16, 3), dtype=np.uint8)
+    frame_master[:, :] = (255, 0, 0)
+    state = main.LivePreviewState(version="0.6.8", git_commit="abc123")
+    state.camera_pipeline = "bgr"
+    state.preview_swap_rb = "auto"
+
+    original_snapshot = main.SNAPSHOT_DIR
+    main.SNAPSHOT_DIR = tmp_path / "snapshots"
+    try:
+        state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="16x16")
+        preview = cv2.imdecode(np.frombuffer(state.latest_frame_jpeg(), dtype=np.uint8), cv2.IMREAD_COLOR)
+        snapshot_path = state.save_snapshot()
+        snapshot = cv2.imread(str(snapshot_path))
+    finally:
+        main.SNAPSHOT_DIR = original_snapshot
+
+    assert preview[..., 0].mean() > 200
+    assert preview[..., 2].mean() < 50
+    assert snapshot[..., 2].mean() > 200
+    assert snapshot[..., 0].mean() < 50
+
+
+def test_diagnostics_runtime_orientation_uses_raw_frame_only(tmp_path):
+    np = pytest.importorskip("numpy")
+    raw = np.arange(18, dtype=np.uint8).reshape((2, 3, 3))
+
+    off = main.generate_camera_diagnostics(raw, tmp_path / "off")
+    on = main.generate_camera_diagnostics(
+        raw,
+        tmp_path / "on",
+        runtime_orientation={"rotation": 90, "flip_horizontal": False, "flip_vertical": False},
+    )
+
+    assert set(off) == {"frame_raw.jpg", "frame_rgb.jpg", "frame_bgr.jpg", "frame_swap_rb.jpg"}
+    assert set(on) == set(off)
+    assert off["frame_raw.jpg"]["pipeline"] == "raw"
+    assert on["frame_raw.jpg"]["pipeline"] == "raw"

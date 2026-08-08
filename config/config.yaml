@@ -58,7 +58,7 @@ plate_detector:
   border_margin: 20
 
 preview:
-  swap_rb: auto
+  swap_rb: true
 
 debug:
   enabled: true

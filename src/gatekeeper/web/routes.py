@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _run_tesseract(image: Any) -> str:
+    """Run optional system Tesseract on one prepared ROI image."""
+    import cv2
+
+    with tempfile.TemporaryDirectory(prefix="gatekeeper_ocr_") as temp_dir:
+        image_path = Path(temp_dir) / "roi.png"
+        cv2.imwrite(str(image_path), image)
+        result = subprocess.run(
+            [
+                "tesseract",
+                str(image_path),
+                "stdout",
+                "--psm", "7",
+                "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
 
 
 def register_routes(app: Any, state: Any, stream_fps: int) -> None:
@@ -34,6 +61,42 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     @app.get("/api/plate_calibration")
     def plate_calibration():
         return jsonify(state.plate_calibration_snapshot())
+
+    @app.get("/api/plate_ocr")
+    def plate_ocr():
+        """Run optional Tesseract against each prepared selected-plate variant."""
+        from src.gatekeeper.plate_roi import build_roi_variants
+        from src.plate_ocr import clean_ocr_text
+
+        try:
+            with state._lock:
+                frame = state._frame
+                bounding_box = state.plate_bounding_box
+                if frame is None or bounding_box is None:
+                    return jsonify({"available": False, "error": "Plate ROI not available"}), 404
+                variants = build_roi_variants(frame, bounding_box)
+            outputs = {}
+            for name in ("rectified", "gray", "enhanced", "threshold"):
+                try:
+                    raw = _run_tesseract(variants[name])
+                    outputs[name] = {"raw": raw, "text": clean_ocr_text(raw)}
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    return jsonify({"available": False, "error": "Tesseract is not installed or timed out", "outputs": outputs})
+            values = [item["text"] for item in outputs.values() if item["text"]]
+            consensus = ""
+            agreement = 0.0
+            if values:
+                counts = {value: values.count(value) for value in set(values)}
+                consensus = max(counts, key=counts.get)
+                agreement = counts[consensus] / len(values)
+            return jsonify({
+                "available": True,
+                "outputs": outputs,
+                "consensus": consensus,
+                "agreement": agreement,
+            })
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"available": False, "error": str(exc)}), 409
 
     @app.get("/plate_roi/<variant>.jpg")
     def plate_roi(variant: str):

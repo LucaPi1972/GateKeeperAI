@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+- Add an isolated small Plate Reading Zone before contour detection, using a centered approximately 20% frame-width ROI with the Italian plate proportion of about 4.7:1.
+- Enlarge only the cropped reading zone before edge/contour processing so small printed plates and their borders have more pixels for detection.
+- Add morphological closing before contour extraction to help recover the complete plate rectangle instead of selecting individual characters.
+- Map all candidate coordinates back to the original 1640x1232 frame so existing overlays, snapshots, calibration metadata, and APIs remain compatible.
+- Keep the original FRAME_MASTER, Live Preview BGR handling, camera configuration, Motion Detection, diagnostics, and OCR scope unchanged.
+
 ## 0.7.2
 
 - Shrink the centered plate-ideal/reading guide to a compact 328x70 px zone on the 1640x1232 live frame, preserving an approximately 4.7:1 plate proportion.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.7
+
+- Keep the 0.7.6 detector thresholds, soft Reading Zone ranking, and temporal selection behavior unchanged.
+- Add measurement-only PlateDetector diagnostics for field calibration: frames seen, frames with candidates, selected frames, strict/soft selections, stable selections, no-selection frames, candidate average, selection rate, stable-selection rate, average selection score, and average selection margin.
+- Expose `selection_margin`, `selection_mode`, and `stable_selection` on candidate metadata so the existing Plate Calibration view can report why and how confidently a candidate was selected.
+- Log a compact `PLATE DIAGNOSTICS` summary every 10 seconds without changing detection decisions.
+- Add unit tests for the new diagnostic counters and metadata.
+- Do not change camera color handling, Live Preview BGR behavior, FRAME_MASTER, Motion Detection, detector thresholds, crop generation, or OCR scope.
+
 ## 0.7.6
 
 - Keep the proven 0.7.5 full-frame detector and soft Reading Zone behavior unchanged as the baseline.

@@ -35,6 +35,24 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     def plate_calibration():
         return jsonify(state.plate_calibration_snapshot())
 
+    @app.get("/plate_roi/<variant>.jpg")
+    def plate_roi(variant: str):
+        """Return the selected plate ROI in one of the diagnostic forms."""
+        from src.gatekeeper.plate_roi import build_roi_variants, encode_variant
+
+        if variant not in {"original", "gray", "enhanced", "threshold"}:
+            return Response("Unknown ROI variant\n", status=404, mimetype="text/plain")
+        try:
+            with state._lock:
+                frame = state._frame
+                bounding_box = state.plate_bounding_box
+                if frame is None or bounding_box is None:
+                    return Response("Plate ROI not available\n", status=404, mimetype="text/plain")
+                image = build_roi_variants(frame, bounding_box)[variant]
+            return Response(encode_variant(image), mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+        except (ValueError, RuntimeError) as exc:
+            return Response(f"{exc}\n", status=409, mimetype="text/plain")
+
     @app.post("/api/plate_calibration/save")
     def save_plate_calibration():
         try:

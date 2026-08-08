@@ -60,11 +60,10 @@ class PlateDetection:
 class PlateDetector:
     """Detect rectangular license plate candidates without OCR.
 
-    Release 0.7.5 keeps the 0.7.4 full-frame detector, but uses the configured
+    Release 0.7.5 keeps the 0.7.4 full-frame detector, but uses a small central
     reading zone only as a soft ranking signal. Candidates are never discarded
     merely because they are outside the zone. A near-valid fallback is allowed
-    when the strict detector has no valid candidate, which prevents the reading
-    zone from creating false negatives while still improving candidate ranking.
+    when the strict detector has no valid candidate, preventing false negatives.
     """
 
     def __init__(
@@ -107,28 +106,27 @@ class PlateDetector:
         self._initialized = True
 
     def _zone_score(self, bbox: tuple[int, int, int, int], frame_w: int, frame_h: int) -> float:
-        """Return 0..1 proximity to the configured reading zone center.
-
-        The zone is a soft preference only. A disabled or invalid zone returns
-        the neutral score 0.5 so candidate ranking remains geometry-driven.
-        """
-        if not self.reading_zone:
-            return 0.5
-        x = float(self.reading_zone.get("x", 0))
-        y = float(self.reading_zone.get("y", 0))
-        w = max(float(self.reading_zone.get("width", 0)), 1.0)
-        h = max(float(self.reading_zone.get("height", 0)), 1.0)
-        if w <= 1 or h <= 1:
-            return 0.5
+        """Return 0..1 proximity to the small central reading zone."""
+        if self.reading_zone:
+            zone = self.reading_zone
+            x = float(zone.get("x", 0))
+            y = float(zone.get("y", 0))
+            w = max(float(zone.get("width", 0)), 1.0)
+            h = max(float(zone.get("height", 0)), 1.0)
+        else:
+            # Default to the same 20% x ~5.7% central guide used by the UI
+            # for the 1640x1232 camera, expressed proportionally to the frame.
+            w = frame_w * 0.20
+            h = frame_h * (70.0 / 1232.0)
+            x = (frame_w - w) / 2.0
+            y = (frame_h - h) / 2.0
         cx = bbox[0] + bbox[2] / 2.0
         cy = bbox[1] + bbox[3] / 2.0
         zone_cx = x + w / 2.0
         zone_cy = y + h / 2.0
-        # One zone width/height away reaches zero; inside the zone scores 1.
-        dx = abs(cx - zone_cx) / (w / 2.0)
-        dy = abs(cy - zone_cy) / (h / 2.0)
-        distance = max(dx, dy)
-        return round(max(0.0, 1.0 - distance), 3)
+        dx = abs(cx - zone_cx) / max(w / 2.0, 1.0)
+        dy = abs(cy - zone_cy) / max(h / 2.0, 1.0)
+        return round(max(0.0, 1.0 - max(dx, dy)), 3)
 
     def _selection_score(
         self,
@@ -213,8 +211,7 @@ class PlateDetector:
         selected = max(strict_valid, key=lambda c: c.selection_score, default=None)
 
         # If strict filtering finds nothing, allow one near-valid candidate.
-        # This is intentionally conservative: grossly small/large objects and
-        # wildly wrong aspect ratios are still excluded from fallback selection.
+        # Grossly small/large objects and wildly wrong aspect ratios remain excluded.
         if selected is None:
             near_valid = [
                 c for c in candidates

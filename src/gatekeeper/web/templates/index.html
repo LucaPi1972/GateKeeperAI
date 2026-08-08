@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.7.1</title>
+  <title>GateKeeper AI 0.7.2</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="title-row">
         <div>
           <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.7.1</h1>
+          <h1>GateKeeper AI 0.7.2</h1>
         </div>
         <button id="snapshot_button" type="button">Save Snapshot</button>
         <button id="calibration_button" type="button">Save Calibration Frame</button>
@@ -107,7 +107,6 @@
       const payload = await response.json();
       label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
     }
-
     async function saveSnapshot() {
       const label = document.getElementById('snapshot_status');
       const response = await fetch('/api/snapshot', { method: 'POST' });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1
+
+- Add an optional live OCR test stage after Plate ROI preparation.
+- Run the system Tesseract engine independently against rectified, grayscale, enhanced, and adaptive-threshold ROI variants.
+- Show each OCR result and a simple consensus/agreement value in the single-screen HTTP Live Preview.
+- Keep OCR optional: if Tesseract is unavailable, the detector and ROI preview continue to operate normally.
+- Do not change PlateDetector thresholds, temporal selection, Reading Zone, camera color handling, BGR Live Preview, FRAME_MASTER, Motion Detection, or ROI generation.
+- This release is a test/measurement stage; no OCR result is used to make plate-selection decisions.
+
 ## 0.8.0
 
 - Keep the proven 0.7.9 plate detector and temporal selection behavior unchanged.

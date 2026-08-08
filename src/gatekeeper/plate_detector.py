@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+import logging
+import time
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,9 @@ class PlateCandidate:
     zone_score: float = 0.0
     selection_score: float = 0.0
     stability_score: float = 0.0
+    selection_margin: float = 0.0
+    selection_mode: str = "none"
+    stable_selection: bool = False
 
     @property
     def rejected(self) -> bool:
@@ -39,6 +44,9 @@ class PlateCandidate:
             "zone_score": self.zone_score,
             "selection_score": self.selection_score,
             "stability_score": self.stability_score,
+            "selection_margin": self.selection_margin,
+            "selection_mode": self.selection_mode,
+            "stable_selection": self.stable_selection,
             "selected": self.selected,
             "rejected": not self.selected,
             "rejection_reason": "" if self.selected else reason,
@@ -62,16 +70,17 @@ class PlateDetection:
     stability_score: float = 0.0
     selection_margin: float = 0.0
     selection_mode: str = "strict"
+    stable_selection: bool = False
 
 
 class PlateDetector:
     """Detect rectangular license plate candidates without OCR.
 
-    Release 0.7.6 keeps the 0.7.5 full-frame detector and soft Reading Zone,
-    and adds selection observability plus conservative temporal stability.
-    The Reading Zone never hard-filters candidates. Temporal stability is only
-    used when a previous candidate remains competitive, so the detector does
-    not jump between similarly scored objects from frame to frame.
+    Release 0.7.7 keeps the 0.7.6 detector behavior unchanged and adds
+    measurement-only diagnostics. The diagnostics count frames, candidates,
+    selections, soft selections, stable selections and score margins so field
+    tests can quantify whether subsequent detector changes really improve the
+    result. No threshold or selection rule is changed by the diagnostics.
     """
 
     def __init__(
@@ -107,9 +116,23 @@ class PlateDetector:
         self.last_debug_frames: dict[str, Any] = {}
         self.last_selection_margin = 0.0
         self.last_selection_mode = "none"
+        self.last_stable_selection = False
         self._previous_selected_bbox: tuple[int, int, int, int] | None = None
         self._initialized = False
         self._cv2: Any | None = None
+        self._logger = logging.getLogger("gatekeeper.plate_detector")
+        self._diagnostics_started_at = time.monotonic()
+        self._frames_seen = 0
+        self._frames_with_candidates = 0
+        self._frames_selected = 0
+        self._strict_selected = 0
+        self._soft_selected = 0
+        self._stable_selected = 0
+        self._frames_without_selection = 0
+        self._candidate_total = 0
+        self._selection_score_total = 0.0
+        self._selection_margin_total = 0.0
+        self._last_diagnostics_log = 0.0
 
     def initialize(self) -> None:
         if self._initialized:
@@ -202,12 +225,44 @@ class PlateDetector:
             return previous
         return None
 
+    def diagnostics_snapshot(self) -> dict[str, Any]:
+        """Return measurement-only detector statistics for calibration tests."""
+        elapsed = max(time.monotonic() - self._diagnostics_started_at, 0.001)
+        frames = self._frames_seen
+        return {
+            "frames_seen": frames,
+            "frames_with_candidates": self._frames_with_candidates,
+            "frames_selected": self._frames_selected,
+            "strict_selected": self._strict_selected,
+            "soft_selected": self._soft_selected,
+            "stable_selected": self._stable_selected,
+            "frames_without_selection": self._frames_without_selection,
+            "candidate_total": self._candidate_total,
+            "candidate_average": round(self._candidate_total / max(frames, 1), 2),
+            "selection_rate": round(self._frames_selected / max(frames, 1), 3),
+            "stable_selection_rate": round(self._stable_selected / max(self._frames_selected, 1), 3),
+            "average_selection_score": round(self._selection_score_total / max(self._frames_selected, 1), 3),
+            "average_selection_margin": round(self._selection_margin_total / max(self._frames_selected, 1), 3),
+            "elapsed_seconds": round(elapsed, 1),
+            "last_selection_mode": self.last_selection_mode,
+            "last_stable_selection": self.last_stable_selection,
+            "last_selection_margin": self.last_selection_margin,
+        }
+
+    def _log_diagnostics(self) -> None:
+        now = time.monotonic()
+        if now - self._last_diagnostics_log < 10.0:
+            return
+        self._last_diagnostics_log = now
+        self._logger.info("PLATE DIAGNOSTICS %s", self.diagnostics_snapshot())
+
     def detect(self, frame: Any) -> PlateDetection | None:
         self.initialize()
         cv2 = self._cv2
         if cv2 is None:
             raise RuntimeError("PlateDetector is not initialized.")
 
+        self._frames_seen += 1
         import sys
         camera_manager = getattr(sys.modules.get("main") or sys.modules.get("__main__"), "CameraManager")
         gray = camera_manager.to_gray(frame)
@@ -259,9 +314,15 @@ class PlateDetector:
                 reason = "confidence"
             candidates.append(PlateCandidate((x, y, width, height), confidence, approx, aspect_ratio, area, rectangularity, rotation, reason == "", reason, False, zone_score, selection_score, stability_score))
 
+        self._candidate_total += len(candidates)
+        if candidates:
+            self._frames_with_candidates += 1
+
         strict_valid = sorted((c for c in candidates if c.valid), key=lambda c: c.selection_score, reverse=True)
-        selected = self._prefer_previous_candidate(strict_valid) or (strict_valid[0] if strict_valid else None)
+        previous_selected = self._prefer_previous_candidate(strict_valid)
+        selected = previous_selected or (strict_valid[0] if strict_valid else None)
         selection_mode = "strict" if selected is not None else "none"
+        stable_selection = previous_selected is not None
 
         if selected is None:
             near_valid = sorted(
@@ -277,8 +338,10 @@ class PlateDetector:
                 key=lambda c: c.selection_score,
                 reverse=True,
             )
-            selected = self._prefer_previous_candidate(near_valid) or (near_valid[0] if near_valid else None)
+            previous_selected = self._prefer_previous_candidate(near_valid)
+            selected = previous_selected or (near_valid[0] if near_valid else None)
             selection_mode = "soft" if selected is not None else "none"
+            stable_selection = previous_selected is not None
 
         ranked = strict_valid if strict_valid else sorted(candidates, key=lambda c: c.selection_score, reverse=True)
         top_score = ranked[0].selection_score if ranked else 0.0
@@ -286,23 +349,42 @@ class PlateDetector:
         selection_margin = round(max(0.0, top_score - second_score), 3)
         self.last_selection_margin = selection_margin
         self.last_selection_mode = selection_mode
+        self.last_stable_selection = stable_selection
 
         if selected is not None:
+            self._frames_selected += 1
+            self._strict_selected += 1 if selection_mode == "strict" else 0
+            self._soft_selected += 1 if selection_mode == "soft" else 0
+            self._stable_selected += 1 if stable_selection else 0
+            self._selection_score_total += selected.selection_score
+            self._selection_margin_total += selection_margin
             candidates = [
                 PlateCandidate(
                     c.bounding_box, c.confidence, c.contour, c.aspect_ratio, c.area,
                     c.rectangularity, c.rotation, c.valid, c.rejected_reason,
                     c.bounding_box == selected.bounding_box,
                     c.zone_score, c.selection_score, c.stability_score,
+                    selection_margin, selection_mode, stable_selection,
                 )
                 for c in candidates
             ]
             selected = next(c for c in candidates if c.selected)
             self._previous_selected_bbox = selected.bounding_box
         else:
+            self._frames_without_selection += 1
             self._previous_selected_bbox = None
+            candidates = [
+                PlateCandidate(
+                    c.bounding_box, c.confidence, c.contour, c.aspect_ratio, c.area,
+                    c.rectangularity, c.rotation, c.valid, c.rejected_reason,
+                    False, c.zone_score, c.selection_score, c.stability_score,
+                    selection_margin, selection_mode, False,
+                )
+                for c in candidates
+            ]
 
         self.last_candidates = candidates
+        self._log_diagnostics()
         if selected is None:
             return None
         return PlateDetection(
@@ -310,7 +392,7 @@ class PlateDetector:
             selected.aspect_ratio, selected.area, selected.rectangularity,
             selected.rotation, tuple(candidates), selected.selection_score,
             selected.zone_score, selected.stability_score, selection_margin,
-            selection_mode,
+            selection_mode, stable_selection,
         )
 
     def crop(self, frame: Any, detection: PlateDetection) -> Any:

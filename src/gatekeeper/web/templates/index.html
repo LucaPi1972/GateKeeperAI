@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.6.11</title>
+  <title>GateKeeper AI 0.7.0</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,9 +12,10 @@
       <div class="title-row">
         <div>
           <p class="eyebrow">HTTP Live Preview</p>
-          <h1>GateKeeper AI 0.6.11</h1>
+          <h1>GateKeeper AI 0.7.0</h1>
         </div>
         <button id="snapshot_button" type="button">Save Snapshot</button>
+        <button id="calibration_button" type="button">Save Calibration Frame</button>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
       <p id="snapshot_status" class="snapshot-status" aria-live="polite"></p>
@@ -37,6 +38,22 @@
         <dt>Live Preview Pipeline</dt><dd id="live_preview_pipeline">Live Preview Pipeline: BGR</dd>
       </dl>
     </aside>
+    <section class="status-card">
+      <p class="eyebrow">Plate Calibration</p>
+      <dl>
+        <dt>Detection enabled</dt><dd id="cal_enabled">false</dd>
+        <dt>Candidates</dt><dd id="cal_candidates">0</dd>
+        <dt>Selected candidate</dt><dd id="cal_selected">null</dd>
+        <dt>Confidence</dt><dd id="cal_confidence">n/a</dd>
+        <dt>Bounding box</dt><dd id="cal_bbox">n/a</dd>
+        <dt>Area</dt><dd id="cal_area">n/a</dd>
+        <dt>Aspect ratio</dt><dd id="cal_aspect">n/a</dd>
+        <dt>Rectangularity</dt><dd id="cal_rectangularity">n/a</dd>
+        <dt>Rejection reasons</dt><dd id="cal_reasons">n/a</dd>
+        <dt>Thresholds</dt><dd id="cal_thresholds">n/a</dd>
+      </dl>
+      <p id="calibration_status" class="snapshot-status" aria-live="polite"></p>
+    </section>
   </main>
   <script>
     async function refreshStatus() {
@@ -56,6 +73,28 @@
       document.getElementById('camera_orientation').textContent = JSON.stringify(status.camera_orientation || {});
       document.getElementById('live_preview_pipeline').textContent = `Live Preview Pipeline: ${(status.preview_pipeline || 'bgr').toUpperCase()}`;
     }
+    async function refreshCalibration() {
+      const response = await fetch('/api/plate_calibration');
+      const calibration = await response.json();
+      const selected = calibration.selected_candidate;
+      document.getElementById('cal_enabled').textContent = calibration.enabled;
+      document.getElementById('cal_candidates').textContent = calibration.candidate_count ?? 0;
+      document.getElementById('cal_selected').textContent = selected ? JSON.stringify(selected) : 'null';
+      document.getElementById('cal_confidence').textContent = selected ? Number(selected.confidence).toFixed(3) : 'n/a';
+      document.getElementById('cal_bbox').textContent = selected ? selected.bounding_box : 'n/a';
+      document.getElementById('cal_area').textContent = selected ? selected.area : 'n/a';
+      document.getElementById('cal_aspect').textContent = selected ? Number(selected.aspect_ratio).toFixed(3) : 'n/a';
+      document.getElementById('cal_rectangularity').textContent = selected ? Number(selected.rectangularity).toFixed(3) : 'n/a';
+      document.getElementById('cal_reasons').textContent = (calibration.candidates || []).map(c => c.rejection_reason).filter(Boolean).join(', ') || 'none';
+      document.getElementById('cal_thresholds').textContent = JSON.stringify(calibration.thresholds || {});
+    }
+    async function saveCalibration() {
+      const label = document.getElementById('calibration_status');
+      const response = await fetch('/api/plate_calibration/save', { method: 'POST' });
+      const payload = await response.json();
+      label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
+    }
+
     async function saveSnapshot() {
       const label = document.getElementById('snapshot_status');
       const response = await fetch('/api/snapshot', { method: 'POST' });
@@ -63,8 +102,10 @@
       label.textContent = response.ok ? `Saved ${payload.filename}` : payload.error;
     }
     document.getElementById('snapshot_button').addEventListener('click', saveSnapshot);
+    document.getElementById('calibration_button').addEventListener('click', saveCalibration);
     refreshStatus();
-    setInterval(refreshStatus, 1000);
+    refreshCalibration();
+    setInterval(() => { refreshStatus(); refreshCalibration(); }, 1000);
   </script>
 </body>
 </html>

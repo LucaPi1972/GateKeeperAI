@@ -1,6 +1,6 @@
 # GateKeeper AI
 
-GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.6.11 restores the Release 0.6.9 HTTP Live Preview color behavior while keeping pipeline selection disabled in the web UI.
+GateKeeper AI is the core runtime for Raspberry Pi camera capture, full-frame motion detection, plate-candidate debugging, and local display calibration. Release 0.7.0 starts the license-plate calibration phase for observing the existing PlateDetector with a printed Italian plate while keeping OCR, whitelist, GPIO/access control, Live Preview color handling, Motion Detection, and the SQLite schema unchanged.
 
 ## Version
 
@@ -12,7 +12,7 @@ On startup the application prints runtime metadata:
 
 ```text
 ========================================
- GateKeeper AI v0.6.7
+ GateKeeper AI v0.7.0
 ========================================
 Build: <git short hash or "development">
 Python: <python version>
@@ -63,6 +63,25 @@ Motion Detector / Plate Detector / HTTP Preview / Snapshot / Diagnostics / Futur
 
 GateKeeper records runtime metadata for the shared frame: frame id, shape, dtype, pipeline, rotation, and horizontal/vertical flip flags. `/api/pipeline` exposes the real runtime state for camera, preview, motion, plate, snapshot, diagnostics, and JPEG consumers as read-only metadata. Startup validates the shared path and logs `FRAME PIPELINE VERIFIED` when the consumers agree, or `FRAME PIPELINE ERROR` / `FRAME PIPELINE MISMATCH` if one differs. Every 10 seconds the camera logs a `FRAME MASTER` summary with frame id, shape, pipeline, rotation, flips, and consumers.
 
+
+## Plate Calibration
+
+Release 0.7.0 adds a configurable plate calibration mode for observing the existing `PlateDetector`; it does not add OCR, whitelist matching, GPIO/access control, camera color-pipeline changes, Live Preview behavior changes, Motion Detection changes, or SQLite schema changes.
+
+When `plate_calibration.enabled` is true, frames processed during motion expose candidate metadata through `/api/plate_calibration` and the web interface. Each candidate reports bounding box, area, aspect ratio, rectangularity, confidence, selected/rejected state, and explicit rejection reasons such as `area_too_small`, `area_too_large`, `aspect_ratio`, `rectangularity`, `invalid_geometry`, `confidence`, or `not_selected`.
+
+Annotated calibration frames are saved as `images/calibration_*.jpg` and use green for the selected candidate, yellow for valid candidates that were not selected, and red for rejected candidates. Existing selected plate crops continue to be saved as `images/plate_*.jpg`, and selected crops continue to be inserted into the existing `plates` table. The Plate Calibration panel exposes the existing thresholds as read-only values: `min_area`, `max_area`, `min_aspect_ratio`, `max_aspect_ratio`, `min_rectangularity`, and `confidence_threshold`; no tuning sliders or automatic optimization are included in this release.
+
+Manual calibration sequence:
+
+1. Start GateKeeper.
+2. Place the printed Italian plate in the camera view.
+3. Trigger motion.
+4. Observe candidate detection.
+5. Save calibration frame.
+6. Move the plate to different positions.
+7. Repeat.
+
 ## Runtime directory, database, and PID file
 
 The `runtime/` directory is created automatically while the application is running. It contains `gatekeeper.pid`, which stores the current process ID, and `gatekeeper.db`, the SQLite database used for events. The PID file is removed automatically when the application exits, including when Ctrl+C sends SIGINT.
@@ -108,6 +127,13 @@ debug:
   enabled: true
   live_preview: true
   save_annotated_frames: true
+
+plate_calibration:
+  enabled: true
+  save_frames: true
+  show_candidates: true
+  show_rejected: true
+  show_metrics: true
 
 logging:
   level: INFO
@@ -180,6 +206,13 @@ debug:
   enabled: true
   live_preview: true
   save_annotated_frames: true
+
+plate_calibration:
+  enabled: true
+  save_frames: true
+  show_candidates: true
+  show_rejected: true
+  show_metrics: true
 ```
 
 When `debug.live_preview` is enabled and a display is available, GateKeeper AI opens an OpenCV preview window for the current frame. If the host is headless and neither `DISPLAY` nor `WAYLAND_DISPLAY` is available on Linux, preview is disabled automatically and the application continues running normally.

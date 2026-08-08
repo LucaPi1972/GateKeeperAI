@@ -17,6 +17,26 @@ class PlateCandidate:
     rotation: float
     valid: bool
     rejected_reason: str = ""
+    selected: bool = False
+
+    @property
+    def rejected(self) -> bool:
+        return not self.valid or bool(self.rejected_reason)
+
+    def metadata(self) -> dict[str, Any]:
+        reason = self.rejected_reason
+        if self.valid and not self.selected:
+            reason = "not_selected"
+        return {
+            "bounding_box": self.bounding_box,
+            "area": self.area,
+            "aspect_ratio": self.aspect_ratio,
+            "rectangularity": self.rectangularity,
+            "confidence": self.confidence,
+            "selected": self.selected,
+            "rejected": not self.selected,
+            "rejection_reason": "" if self.selected else reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -93,6 +113,7 @@ class PlateDetector:
                 continue
             x, y, width, height = cv2.boundingRect(approx)
             if width <= 0 or height <= 0:
+                candidates.append(PlateCandidate((x, y, max(width, 0), max(height, 0)), 0.0, approx, 0.0, 0.0, 0.0, 0.0, False, "invalid_geometry"))
                 continue
             rect = cv2.minAreaRect(approx)
             (_, _), (rw, rh), angle = rect
@@ -110,17 +131,24 @@ class PlateDetector:
             ratio_score = max(0.0, 1.0 - abs(aspect_ratio - ratio_center) / ratio_range)
             confidence = round(max(0.01, area_score * 0.45 + ratio_score * 0.35 + rectangularity * 0.20), 3)
             reason = ""
-            if confidence < self.confidence_threshold: reason = "confidence"
-            elif not self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio: reason = "aspect_ratio"
-            elif not self.min_area <= area <= self.max_area: reason = "area"
-            elif rectangularity < self.min_rectangularity: reason = "rectangularity"
-            elif rotation > self.max_rotation: reason = "rotation"
-            elif x < self.border_margin or y < self.border_margin or x + width > frame_w - self.border_margin or y + height > frame_h - self.border_margin: reason = "border"
+            if area < self.min_area:
+                reason = "area_too_small"
+            elif area > self.max_area:
+                reason = "area_too_large"
+            elif not self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio:
+                reason = "aspect_ratio"
+            elif rectangularity < self.min_rectangularity:
+                reason = "rectangularity"
+            elif confidence < self.confidence_threshold:
+                reason = "confidence"
             candidates.append(PlateCandidate((x, y, width, height), confidence, approx, aspect_ratio, area, rectangularity, rotation, reason == "", reason))
 
-        self.last_candidates = candidates
         valid = [c for c in candidates if c.valid]
         selected = max(valid, key=lambda c: c.confidence, default=None)
+        if selected is not None:
+            candidates = [PlateCandidate(c.bounding_box, c.confidence, c.contour, c.aspect_ratio, c.area, c.rectangularity, c.rotation, c.valid, c.rejected_reason, c.bounding_box == selected.bounding_box) for c in candidates]
+            selected = next(c for c in candidates if c.selected)
+        self.last_candidates = candidates
         if selected is None:
             return None
         return PlateDetection(selected.bounding_box, selected.confidence, selected.contour, selected.aspect_ratio, selected.area, selected.rectangularity, selected.rotation, tuple(candidates))

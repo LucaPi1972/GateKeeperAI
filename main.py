@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from src.gatekeeper.display_manager import DisplayManager
-from src.gatekeeper.plate_detector import PlateDetection, PlateDetector
+from src.gatekeeper.plate_detector import PlateCandidate, PlateDetection, PlateDetector
 
 try:
     import yaml
@@ -309,6 +309,9 @@ class LivePreviewState:
         self.preview_swap_rb = "true"
         self.diagnostics_mode = "RAW_FRAME"
         self.runtime_orientation = False
+        self.plate_calibration_config = {"enabled": False, "save_frames": False, "show_candidates": False, "show_rejected": False, "show_metrics": False}
+        self._calibration_jpeg: bytes | None = None
+        self._calibration_frame: Any | None = None
 
     def update_frame(
         self,
@@ -319,6 +322,7 @@ class LivePreviewState:
         resolution: str,
         plate_detection: PlateDetection | None = None,
         plate_crop: Any | None = None,
+        plate_candidates: list[Any] | None = None,
     ) -> None:
         """Store the latest captured frame and metadata for web consumers."""
         now = datetime.now(timezone.utc).isoformat()
@@ -329,7 +333,7 @@ class LivePreviewState:
         consumers = {name: master for name in ("preview", "snapshot", "motion", "plate")}
         height = int(frame.shape[0]) if hasattr(frame, "shape") else None
         width = int(frame.shape[1]) if hasattr(frame, "shape") and len(frame.shape) > 1 else None
-        candidates = list(getattr(plate_detection, "candidates", []) or [])
+        candidates = list(plate_candidates or getattr(plate_detection, "candidates", []) or [])
         with self._lock:
             self._frame = frame
             self._frame_jpeg = encoded_frame
@@ -347,8 +351,11 @@ class LivePreviewState:
                 plate_detection.bounding_box if plate_detection is not None else None
             )
             self.confidence = plate_detection.confidence if plate_detection is not None else None
-            if candidates:
-                self.candidates = candidates
+            self.candidates = candidates
+            if self.plate_calibration_config.get("enabled"):
+                all_candidates = candidates or list(getattr(plate_detection, "candidates", []) or [])
+                self._calibration_frame = annotate_calibration_frame(frame, plate_detection, all_candidates)
+                self._calibration_jpeg = encoder(self._calibration_frame)
             now_monotonic = time.monotonic()
             if now_monotonic - self._last_master_log >= 10:
                 snapshot = self.pipeline_snapshot()
@@ -400,7 +407,7 @@ class LivePreviewState:
                 "candidate_count": len(self.candidates),
                 "selected_candidate": self.plate_bounding_box,
                 "rejected_candidates": len([c for c in self.candidates if not getattr(c, "valid", False)]),
-                "thresholds": self.detector_thresholds,
+                "thresholds": self.calibration_thresholds(),
                 "camera_orientation": self.camera_orientation,
                 "camera_pipeline": self.camera_pipeline,
                 "active_pipeline": self.camera_pipeline,
@@ -533,6 +540,52 @@ class LivePreviewState:
         }
         self.camera_controls = dict(camera_config.get("controls", {}) or {})
         return {"camera": camera_config}
+
+
+
+    def calibration_thresholds(self) -> dict[str, Any]:
+        """Expose existing PlateDetector thresholds using calibration labels."""
+        thresholds = dict(self.detector_thresholds or {})
+        return {
+            "min_area": thresholds.get("min_area"),
+            "max_area": thresholds.get("max_area"),
+            "min_aspect_ratio": thresholds.get("min_aspect_ratio", thresholds.get("aspect_ratio_min")),
+            "max_aspect_ratio": thresholds.get("max_aspect_ratio", thresholds.get("aspect_ratio_max")),
+            "min_rectangularity": thresholds.get("min_rectangularity"),
+            "confidence_threshold": thresholds.get("confidence_threshold"),
+        }
+
+    def plate_calibration_snapshot(self) -> dict[str, Any]:
+        """Return the current runtime plate calibration state."""
+        with self._lock:
+            selected_box = self.plate_bounding_box
+            candidates = [plate_candidate_metadata(candidate, selected_box) for candidate in self.candidates]
+            selected = next((candidate for candidate in candidates if candidate["selected"]), None)
+            return {
+                "enabled": bool(self.plate_calibration_config.get("enabled", False)),
+                "candidate_count": len(candidates),
+                "selected_candidate": selected,
+                "candidates": candidates,
+                "timestamp": self.updated_at,
+                "frame_width": self.width or 0,
+                "frame_height": self.height or 0,
+                "thresholds": self.calibration_thresholds(),
+            }
+
+    def save_current_calibration_frame(self) -> Path:
+        """Persist the latest annotated plate calibration frame."""
+        with self._lock:
+            frame = self._calibration_frame
+            source = self._frame
+            candidates = list(self.candidates)
+            detection = None
+            if self.plate_bounding_box is not None:
+                detection = PlateDetection(self.plate_bounding_box, float(self.confidence or 0.0), None, candidates=tuple(candidates))
+        if frame is None:
+            if source is None:
+                raise RuntimeError("No calibration frame is available.")
+            return save_calibration_frame(source, detection, candidates)
+        return CameraManager.write_image(frame, calibration_image_path(datetime.now(timezone.utc).isoformat()))
 
     def events_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -1272,6 +1325,58 @@ def plate_image_path(timestamp: str) -> Path:
     return IMAGE_DIR / f"plate_{safe_timestamp}.jpg"
 
 
+def calibration_image_path(timestamp: str) -> Path:
+    """Build a unique filesystem-safe plate calibration frame path."""
+    safe_timestamp = timestamp.replace(":", "").replace("+", "Z")
+    return IMAGE_DIR / f"calibration_{safe_timestamp}.jpg"
+
+
+def plate_candidate_metadata(candidate: Any, selected_box: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+    """Return JSON-ready plate candidate calibration metadata."""
+    if hasattr(candidate, "metadata"):
+        return candidate.metadata()
+    bbox = tuple(getattr(candidate, "bounding_box", ()))
+    selected = bool(getattr(candidate, "selected", False)) or (selected_box is not None and bbox == selected_box)
+    valid = bool(getattr(candidate, "valid", selected))
+    reason = str(getattr(candidate, "rejected_reason", "") or ("not_selected" if valid and not selected else ""))
+    return {
+        "bounding_box": bbox,
+        "area": float(getattr(candidate, "area", 0.0)),
+        "aspect_ratio": float(getattr(candidate, "aspect_ratio", 0.0)),
+        "rectangularity": float(getattr(candidate, "rectangularity", 0.0)),
+        "confidence": float(getattr(candidate, "confidence", 0.0)),
+        "selected": selected,
+        "rejected": not selected,
+        "rejection_reason": "" if selected else reason,
+    }
+
+
+def annotate_calibration_frame(frame: Any, plate_detection: PlateDetection | None = None, candidates: list[Any] | None = None) -> Any:
+    """Draw plate calibration candidate overlays on a copy of FRAME_MASTER."""
+    import cv2
+
+    annotated = frame.copy() if hasattr(frame, "copy") else frame
+    selected_box = plate_detection.bounding_box if plate_detection is not None else None
+    items = list(candidates or getattr(plate_detection, "candidates", []) or [])
+    for candidate in items:
+        data = plate_candidate_metadata(candidate, selected_box)
+        x, y, w, h = [int(v) for v in data["bounding_box"]]
+        color = (0, 255, 0) if data["selected"] else ((255, 255, 0) if data["rejection_reason"] == "not_selected" else (255, 0, 0))
+        cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 2)
+        label = f'C:{data["confidence"]:.2f} AR:{data["aspect_ratio"]:.2f} A:{data["area"]:.0f} R:{data["rectangularity"]:.2f}'
+        reason = "selected" if data["selected"] else data["rejection_reason"]
+        cv2.putText(annotated, label, (x, max(16, y - 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        cv2.putText(annotated, reason, (x, max(32, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    return annotated
+
+
+def save_calibration_frame(frame: Any, plate_detection: PlateDetection | None, candidates: list[Any], timestamp: datetime | None = None) -> Path:
+    """Save an annotated calibration frame under images/calibration_*.jpg."""
+    timestamp = timestamp or datetime.now(timezone.utc)
+    annotated = annotate_calibration_frame(frame, plate_detection, candidates)
+    return CameraManager.write_image(annotated, calibration_image_path(timestamp.isoformat()))
+
+
 def is_display_available() -> bool:
     """Return whether an OpenCV preview window can be shown."""
     if platform.system() in {"Windows", "Darwin"}:
@@ -1415,6 +1520,7 @@ class MotionEventManager:
         plate_detector: PlateDetector | None = None,
         debug_vision: DebugVision | None = None,
         live_preview_state: LivePreviewState | None = None,
+        plate_calibration: dict[str, Any] | None = None,
     ) -> None:
         self.detector = detector
         self.database = database
@@ -1423,8 +1529,10 @@ class MotionEventManager:
         self.plate_detector = plate_detector
         self.debug_vision = debug_vision
         self.live_preview_state = live_preview_state
+        self.plate_calibration = plate_calibration or {"enabled": False}
         self.last_plate_crop: Any | None = None
         self.last_plate_detection: PlateDetection | None = None
+        self.last_plate_candidates: list[Any] = []
         self.state = self.IDLE
         self.event_id: str | None = None
         self.start_time: datetime | None = None
@@ -1456,6 +1564,8 @@ class MotionEventManager:
                 self.state = self.MOTION_ACTIVE
                 self.max_contour_area = max(self.max_contour_area, contour_area)
                 self.logger.info("Motion active")
+                if self.plate_calibration.get("enabled"):
+                    self._detect_plate(frame, now, persist_crop=False)
             self.last_motion_time = now
         elif (
             self.state in {self.MOTION_STARTED, self.MOTION_ACTIVE}
@@ -1510,20 +1620,31 @@ class MotionEventManager:
                 image_start=str(self.image_start),
             )
 
-    def _detect_plate(self, frame: Any, now: datetime) -> None:
+    def _detect_plate(self, frame: Any, now: datetime, *, persist_crop: bool = True) -> None:
         if self.plate_detector is None or self.event_id is None:
             return
         detection = self.plate_detector.detect(frame)
         self.last_plate_detection = detection
+        candidates = list(getattr(detection, "candidates", []) or getattr(self.plate_detector, "last_candidates", []) or [])
+        self.last_plate_candidates = candidates
+        selected_box = detection.bounding_box if detection is not None else None
+        for candidate in candidates:
+            data = plate_candidate_metadata(candidate, selected_box)
+            self.logger.info("Plate candidate bbox=%s area=%.0f aspect=%.3f rectangularity=%.3f confidence=%.3f selected=%s reason=%s", data["bounding_box"], data["area"], data["aspect_ratio"], data["rectangularity"], data["confidence"], data["selected"], data["rejection_reason"] or "selected")
+        if self.plate_calibration.get("enabled") and self.plate_calibration.get("save_frames", False):
+            annotated = annotate_calibration_frame(frame, detection, candidates)
+            path = calibration_image_path(now.isoformat())
+            threading.Thread(target=CameraManager.write_image, args=(annotated, path), daemon=True).start()
+            self.logger.info("Calibration frame saved: %s", path)
         if detection is None:
             return
-        crop_path = self._save_plate_crop(
-            frame, detection, plate_image_path(now.isoformat())
-        )
+        crop_path = self._save_plate_crop(frame, detection, plate_image_path(now.isoformat())) if persist_crop else None
         self.logger.info("Plate detected")
         self.logger.info("Confidence: %.3f", detection.confidence)
         self.logger.info("Bounding box: %s", detection.bounding_box)
-        self.logger.info("Crop path: %s", crop_path)
+        if crop_path is not None:
+            self.logger.info("Crop path: %s", crop_path)
+        self.logger.info("Plate selected bbox=%s confidence=%.3f crop=%s", detection.bounding_box, detection.confidence, crop_path)
         if self.debug_vision is not None and self.debug_vision.save_annotated_frames:
             annotated = self.debug_vision.annotate(
                 frame,
@@ -1538,7 +1659,7 @@ class MotionEventManager:
                 plate_detection=detection,
             )
             self.debug_vision.save_frame(annotated, now)
-        if self.database is not None:
+        if persist_crop and crop_path is not None and self.database is not None:
             self.database.insert_plate(
                 self.event_id,
                 str(crop_path),
@@ -1635,6 +1756,7 @@ def run_until_interrupted(
     end_delay_seconds: float = 2,
     plate_detector: PlateDetector | None = None,
     debug_vision: DebugVision | None = None,
+    plate_calibration: dict[str, Any] | None = None,
     display_manager: DisplayManager | None = None,
     live_preview_state: LivePreviewState | None = None,
 ) -> None:
@@ -1663,6 +1785,7 @@ def run_until_interrupted(
         plate_detector,
         debug_vision,
         live_preview_state,
+        plate_calibration,
     )
     camera_resolution = camera.get_info().get("resolution", "unknown")
     last_frame_started = time.monotonic()
@@ -1684,6 +1807,7 @@ def run_until_interrupted(
                     resolution=camera_resolution,
                     plate_detection=motion_event_manager.last_plate_detection,
                     plate_crop=motion_event_manager.last_plate_crop,
+                    plate_candidates=motion_event_manager.last_plate_candidates,
                 )
             if display_manager is not None and display_manager.requested_enabled:
                 display_manager.update_frame(
@@ -1779,6 +1903,7 @@ def main(argv: list[str] | None = None) -> int:
         debug=bool(plate_config.get("debug", False)),
     )
     debug_config = config.get("debug", {})
+    calibration_config = config.get("plate_calibration", {})
     web_config = config.get("web", {})
     display_config = config.get("display", {})
     display_manager = DisplayManager(
@@ -1812,6 +1937,7 @@ def main(argv: list[str] | None = None) -> int:
     live_preview_state.preview_swap_rb = "true"
     live_preview_state.camera_controls = dict(camera_config.get("controls", {}) or {})
     live_preview_state.detector_thresholds = config.get("plate_detector", {})
+    live_preview_state.plate_calibration_config = calibration_config
     motion_event_manager = MotionEventManager(
         motion_detector,
         database,
@@ -1820,6 +1946,7 @@ def main(argv: list[str] | None = None) -> int:
         plate_detector,
         debug_vision,
         live_preview_state,
+        calibration_config,
     )
     live_preview_state.motion_event_manager = motion_event_manager
     live_preview_server = LivePreviewServer(
@@ -1862,6 +1989,7 @@ def main(argv: list[str] | None = None) -> int:
                 end_delay_seconds=end_delay_seconds,
                 plate_detector=plate_detector,
                 debug_vision=debug_vision,
+                plate_calibration=calibration_config,
                 display_manager=display_manager,
                 live_preview_state=(
                     live_preview_state

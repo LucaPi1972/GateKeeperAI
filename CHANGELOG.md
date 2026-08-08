@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.6
+
+- Keep the proven 0.7.5 full-frame detector and soft Reading Zone behavior unchanged as the baseline.
+- Add conservative temporal selection stability: when the previously selected plate remains competitive, prefer it instead of jumping between similarly scored candidates.
+- Add `stability_score`, `selection_margin`, and `selection_mode` metadata so calibration can distinguish strict selection from the soft fallback path and quantify how clearly the winner beats the next candidate.
+- Keep the detector thresholds unchanged: `min_area: 2500`, `max_area: 150000`, aspect ratio `3.5-6.5`, rectangularity `0.80`, rotation `15`, and confidence threshold `0.70`.
+- Keep the Reading Zone weight at 15% and the soft-selection threshold at 0.42.
+- Do not change camera color handling, Live Preview BGR behavior, FRAME_MASTER, Motion Detection, diagnostics, snapshots, crop generation, or OCR scope.
+
 ## 0.7.5
 
 - Keep the proven 0.7.4 full-frame contour detector; the Reading Zone is now a soft ranking signal instead of a hard filter.

@@ -15,6 +15,7 @@ _OCR_CACHE: dict[int, dict[str, Any]] = {}
 _OCR_CACHE_LOCK = threading.RLock()
 _OCR_TTL = 2.5
 _OCR_INTERVAL = 0.8
+_OCR_FALLBACK_INTERVAL = 5.0
 _OCR_HISTORY_SIZE = 8
 
 
@@ -26,14 +27,14 @@ def _cache_for(state: Any) -> dict[str, Any]:
             "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0,
             "format_score": 0.0, "samples": 0, "frame_id": None, "box": None,
             "updated_at": 0.0, "last_seen": 0.0, "last_requested_frame": None,
-            "last_run": 0.0, "running": False, "frame": None,
+            "last_run": 0.0, "last_fallback_run": 0.0, "running": False, "frame": None,
             "threshold_attempted": False, "duration": None, "history": [],
             "ocr_runs": 0, "valid_runs": 0, "stable": False,
         })
 
 
 def _run_tesseract(image: Any) -> dict[str, Any]:
-    """Run Tesseract once and return text plus its TSV confidence."""
+    """Run one fast Tesseract pass and return text plus TSV confidence."""
     import cv2
     if shutil.which("tesseract") is None:
         raise FileNotFoundError("Tesseract is not installed")
@@ -46,7 +47,7 @@ def _run_tesseract(image: Any) -> dict[str, Any]:
             ["tesseract", str(image_path), "stdout", "--psm", "7", "--oem", "1",
              "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
              "-c", "preserve_interword_spaces=0", "tsv"],
-            capture_output=True, text=True, timeout=6.0, check=False,
+            capture_output=True, text=True, timeout=3.0, check=False,
         )
         elapsed = time.monotonic() - started
         logging.getLogger("gatekeeper").debug(
@@ -87,9 +88,7 @@ def _ocr_one(name: str, image: Any) -> dict[str, Any]:
 
 def _fuse_history(cache: dict[str, Any]) -> dict[str, Any]:
     from src.plate_ocr import fuse_temporal_results
-    history = list(cache.get("history", []))
-    fused = fuse_temporal_results(history, max_items=_OCR_HISTORY_SIZE)
-    return fused
+    return fuse_temporal_results(list(cache.get("history", [])), max_items=_OCR_HISTORY_SIZE)
 
 
 def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id: int | None) -> None:
@@ -97,30 +96,30 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
     cache = _cache_for(state)
     started = time.monotonic()
     try:
-        variants5 = build_roi_variants(frame, box, margin_ratio=0.05)
+        variants = build_roi_variants(frame, box, margin_ratio=0.05)
         outputs: dict[str, dict[str, Any]] = {}
-        primary = _ocr_one("enhanced_5", variants5["enhanced"])
+
+        # Fast path: exactly one OCR invocation for normal field operation.
+        primary = _ocr_one("enhanced_5", variants["enhanced"])
         outputs["enhanced"] = primary
         best = primary
-
-        if primary["score"] < 0.72 or primary.get("engine_confidence") is None:
-            for margin, key in ((0.0, "original_margin"), (0.10, "wide_margin")):
-                variants = build_roi_variants(frame, box, margin_ratio=margin)
-                candidate = _ocr_one(key, variants["enhanced"])
-                outputs[key] = candidate
-                if candidate["score"] > best["score"]:
-                    best = candidate
-
-        rectified = _ocr_one("rectified", variants5["rectified"])
-        outputs["rectified"] = rectified
-        if rectified["score"] > best["score"]:
-            best = rectified
-
         threshold_attempted = False
-        values = [item.get("corrected", "") for item in outputs.values() if item.get("corrected")]
-        if not values or len(set(values)) > 1 or best["score"] < 0.78:
+
+        # Expensive alternatives are diagnostics/fallback only. Never chain all
+        # variants in one request: that was the source of 10-15s field latency.
+        now = time.monotonic()
+        fallback_due = now - float(cache.get("last_fallback_run", 0.0)) >= _OCR_FALLBACK_INTERVAL
+        if primary["score"] < 0.68 and fallback_due:
+            fallback = _ocr_one("rectified", variants["rectified"])
+            outputs["rectified"] = fallback
+            if fallback["score"] > best["score"]:
+                best = fallback
+            with _OCR_CACHE_LOCK:
+                cache["last_fallback_run"] = now
+
+        if best["score"] < 0.55 and fallback_due:
             threshold_attempted = True
-            threshold = _ocr_one("threshold", variants5["threshold"])
+            threshold = _ocr_one("threshold", variants["threshold"])
             outputs["threshold"] = threshold
             if threshold["score"] > best["score"]:
                 best = threshold
@@ -175,8 +174,18 @@ def _start_ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], fr
     threading.Thread(target=_ocr_worker, args=(state, frame, box, frame_id), daemon=True, name="gatekeeper-ocr").start()
 
 
+def _clear_no_plate(cache: dict[str, Any]) -> None:
+    cache.update({
+        "status": "NO_PLATE", "available": False, "error": "Plate ROI not available",
+        "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0,
+        "format_score": 0.0, "samples": 0, "box": None, "frame": None,
+        "history": [], "ocr_runs": 0, "valid_runs": 0, "stable": False,
+        "duration": None, "threshold_attempted": False,
+    })
+
+
 def _refresh_ocr(state: Any) -> dict[str, Any]:
-    """Return cached OCR immediately and schedule a low-rate background refresh."""
+    """Return cached OCR immediately and schedule one low-rate background pass."""
     cache = _cache_for(state)
     now = time.monotonic()
     with state._lock:
@@ -203,7 +212,7 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
             if cache["status"] in {"NO_PLATE", "STALE", "NO_TEXT"}:
                 cache["status"] = "RUNNING"
         elif now - cache["last_seen"] > _OCR_TTL:
-            cache.update({"status": "NO_PLATE", "available": False, "error": "Plate ROI not available", "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0, "samples": 0, "box": None, "frame": None, "history": [], "stable": False})
+            _clear_no_plate(cache)
         elif cache["status"] in {"LIVE", "NO_TEXT"}:
             cache["status"] = "STALE"
         result = {k: v for k, v in cache.items() if k != "frame"}

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.3
+
+- Reduce OCR latency by running the two primary OCR passes (`rectified` and `enhanced`) concurrently.
+- Run adaptive-threshold OCR only as a fallback when the primary passes are empty or disagree.
+- Increase the minimum OCR interval to 1 second to avoid unnecessary Tesseract launches on a Raspberry Pi.
+- Keep OCR work outside the HTTP request path and preserve the explicit `NO_PLATE`, `RUNNING`, `LIVE`, `STALE`, `UNAVAILABLE`, and `ERROR` states.
+- Keep the grayscale ROI available for visual diagnostics but do not launch a redundant Tesseract pass for it.
+- Keep PlateDetector, temporal selection, Reading Zone, camera color handling, BGR Live Preview, FRAME_MASTER, Motion Detection, and ROI generation unchanged.
+- Keep the single-screen Live Preview and show the OCR optimization state clearly.
+
 ## 0.8.2
 
 - Make Live OCR asynchronous and throttled instead of running four Tesseract jobs inside the HTTP request.
@@ -34,7 +44,7 @@
 - Compact the HTTP Live Preview into a single-screen calibration layout.
 - Keep live preview, selection, plate metrics, and detector thresholds visible together without a second calibration page.
 - Reduce typography, spacing, card padding, and control size so the diagnostic information fits below the live image on desktop screens.
-- Keep the detector, camera color pipeline, BGR Live Preview behavior, FRAME_MASTER, Motion Detection, snapshots, and OCR scope unchanged.
+- Keep the detector, camera color pipeline, BGR Live Preview behavior, FRAME_MASTER, Motion Detection, snapshots, diagnostics, and OCR scope unchanged.
 - Correct the visible HTTP page title/header to `GateKeeper AI 0.7.8`.
 
 ## 0.7.7

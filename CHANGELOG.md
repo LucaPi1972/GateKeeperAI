@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.6
+
+- Add field-test OCR stability metrics without changing detector or ROI behavior.
+- Show valid OCR sample count, dominant-result stability, and latest OCR duration in the single-screen Live Preview.
+- Distinguish temporal stability from OCR engine confidence so a small number of consistent samples can be evaluated correctly.
+- Keep camera controls unchanged; brighter illumination remains an external test condition rather than an automatic software correction.
+- Keep PlateDetector, temporal selection, Reading Zone, camera color handling, BGR Live Preview, FRAME_MASTER, Motion Detection, and ROI generation unchanged.
+
 ## 0.8.5
 
 - Add OCR accuracy scoring based on Tesseract TSV confidence, plate-format compatibility, and normalized candidate quality.

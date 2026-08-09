@@ -28,6 +28,7 @@ def _cache_for(state: Any) -> dict[str, Any]:
             "updated_at": 0.0, "last_seen": 0.0, "last_requested_frame": None,
             "last_run": 0.0, "running": False, "frame": None,
             "threshold_attempted": False, "duration": None, "history": [],
+            "ocr_runs": 0, "valid_runs": 0, "stable": False,
         })
 
 
@@ -96,7 +97,6 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
     cache = _cache_for(state)
     started = time.monotonic()
     try:
-        # Start with a 5% crop. If confidence/format is weak, broaden the search.
         variants5 = build_roi_variants(frame, box, margin_ratio=0.05)
         outputs: dict[str, dict[str, Any]] = {}
         primary = _ocr_one("enhanced_5", variants5["enhanced"])
@@ -138,6 +138,14 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
             del history[:-_OCR_HISTORY_SIZE]
             fused = _fuse_history(cache)
             status = "LIVE" if fused.get("text") else "NO_TEXT"
+            cache["ocr_runs"] = int(cache.get("ocr_runs", 0)) + 1
+            if fused.get("text"):
+                cache["valid_runs"] = int(cache.get("valid_runs", 0)) + 1
+            stable = bool(
+                fused.get("samples", 0) >= 3
+                and fused.get("agreement", 0.0) >= 0.67
+                and fused.get("confidence", 0.0) >= 70.0
+            )
             cache.update({
                 "status": status, "available": True, "error": "", "outputs": outputs,
                 "consensus": fused.get("text", ""), "agreement": fused.get("agreement", 0.0),
@@ -145,18 +153,19 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
                 "format_score": best.get("format_score", 0.0),
                 "samples": fused.get("samples", 0), "frame_id": frame_id, "box": box,
                 "updated_at": time.monotonic(), "threshold_attempted": threshold_attempted,
-                "duration": round(time.monotonic() - started, 2),
+                "duration": round(time.monotonic() - started, 2), "stable": stable,
             })
     except FileNotFoundError:
         with _OCR_CACHE_LOCK:
             cache.update({"status": "UNAVAILABLE", "available": False, "error": "Tesseract is not installed"})
     except subprocess.TimeoutExpired:
         with _OCR_CACHE_LOCK:
-            cache.update({"status": "NO_TEXT", "available": True, "error": "Tesseract timeout", "duration": round(time.monotonic() - started, 2)})
+            cache["ocr_runs"] = int(cache.get("ocr_runs", 0)) + 1
+            cache.update({"status": "NO_TEXT", "available": True, "error": "Tesseract timeout", "duration": round(time.monotonic() - started, 2), "stable": False})
     except Exception as exc:
         logging.getLogger("gatekeeper").exception("Live OCR worker failed")
         with _OCR_CACHE_LOCK:
-            cache.update({"status": "ERROR", "available": False, "error": str(exc), "duration": round(time.monotonic() - started, 2)})
+            cache.update({"status": "ERROR", "available": False, "error": str(exc), "duration": round(time.monotonic() - started, 2), "stable": False})
     finally:
         with _OCR_CACHE_LOCK:
             cache["running"] = False
@@ -194,11 +203,12 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
             if cache["status"] in {"NO_PLATE", "STALE", "NO_TEXT"}:
                 cache["status"] = "RUNNING"
         elif now - cache["last_seen"] > _OCR_TTL:
-            cache.update({"status": "NO_PLATE", "available": False, "error": "Plate ROI not available", "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0, "samples": 0, "box": None, "frame": None, "history": []})
+            cache.update({"status": "NO_PLATE", "available": False, "error": "Plate ROI not available", "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0, "samples": 0, "box": None, "frame": None, "history": [], "stable": False})
         elif cache["status"] in {"LIVE", "NO_TEXT"}:
             cache["status"] = "STALE"
         result = {k: v for k, v in cache.items() if k != "frame"}
         result["age"] = round(max(0.0, now - result["updated_at"]), 2) if result["updated_at"] else None
+        result["valid_rate"] = round((result["valid_runs"] / result["ocr_runs"]) * 100.0, 1) if result["ocr_runs"] else 0.0
     return result
 
 

@@ -54,7 +54,7 @@ plate_detector:
   min_area: 2500
   max_area: 150000
   min_rectangularity: 0.80
-  max_rotation: 15
+  max_rotation: 30
   border_margin: 20
   reading_zone_weight: 0.15
   soft_selection_threshold: 0.42

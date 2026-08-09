@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.10</title>
+  <title>GateKeeper AI 0.8.12</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.10</h1></div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.12</h1></div>
         <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
@@ -59,9 +59,10 @@
       const stamp = Date.now();
       for (const variant of ['original','enhanced']) {
         const image = document.getElementById(`roi_${variant}`);
-        if (image && (box || ['STALE','LIVE','RUNNING','NO_TEXT'].includes(status))) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
+        if (image && (box || ['STALE','LIVE','RUNNING','NO_TEXT','STABILIZING','LOCKED','OCR_RUNNING','CONFIRMED'].includes(status))) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
       }
-      setText('roi_status', status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'Enhanced ROI used by OCR.');
+      const messages = {STABILIZING:'Plate geometry stable — waiting for lock.',LOCKED:'PLATE LOCK active — OCR uses frozen Enhanced ROI.',CONFIRMED:'Plate confirmed — OCR consensus stable.'};
+      setText('roi_status', messages[status] || (status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'Enhanced ROI used by OCR.'));
     }
     async function refreshStatus() {
       try {
@@ -82,7 +83,7 @@
         setText('ocr_enhanced', payload.outputs?.enhanced?.corrected || payload.outputs?.enhanced?.text || (status === 'NO_PLATE' ? '—' : '...'));
         setText('ocr_confidence', payload.confidence == null ? '—' : `${Number(payload.confidence).toFixed(0)}%`); setText('ocr_format', payload.format_score == null ? '—' : `${(Number(payload.format_score)*100).toFixed(0)}%`); setText('ocr_agreement', payload.agreement == null ? '—' : `${(Number(payload.agreement)*100).toFixed(0)}%`); setText('ocr_samples', payload.samples == null ? '—' : payload.samples); setText('ocr_stability', payload.stable ? 'YES' : (payload.samples ? 'BUILDING' : '—')); setText('ocr_valid_runs', payload.valid_runs == null ? '—' : `${payload.valid_runs}/${payload.ocr_runs ?? 0}`); setText('ocr_duration', payload.duration == null ? '—' : `${Number(payload.duration).toFixed(1)}s`);
         const age = payload.age == null ? '' : ` • ${payload.age.toFixed(1)}s`; const duration = payload.duration == null ? '' : ` • OCR ${Number(payload.duration).toFixed(1)}s`;
-        const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}${duration}`, STALE:`OCR status: STALE${age}`, NO_TEXT:`OCR status: NO TEXT${age}${duration}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
+        const messages = {NO_PLATE:'OCR status: NO PLATE',RUNNING:'OCR status: RUNNING',LIVE:`OCR status: LIVE${age}${duration}`,STALE:`OCR status: STALE${age}`,NO_TEXT:`OCR status: NO TEXT${age}${duration}`,UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE',ERROR:`OCR status: ERROR — ${payload.error || ''}`,STABILIZING:`OCR status: STABILIZING — ${Number(payload.stable_window||1).toFixed(1)}s`,LOCKED:`OCR status: PLATE LOCK — frozen Enhanced ROI`,OCR_RUNNING:`OCR status: PLATE LOCK — OCR RUNNING`,CONFIRMED:`OCR status: CONFIRMED — stable consensus`,ANGLE_REJECTED:`OCR status: ANGLE REJECTED — ±${Number(payload.angle_limit||30).toFixed(0)}°`};
         setText('ocr_status', messages[status] || `OCR status: ${status}${age}`); refreshRoi(payload.box, status);
       } catch (error) { setText('ocr_status','OCR status: OFFLINE'); }
     }

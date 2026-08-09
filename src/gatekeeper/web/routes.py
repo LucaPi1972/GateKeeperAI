@@ -8,13 +8,15 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 _OCR_CACHE: dict[int, dict[str, Any]] = {}
 _OCR_CACHE_LOCK = threading.RLock()
-_OCR_TTL = 2.0
-_OCR_INTERVAL = 0.5
+_OCR_TTL = 2.5
+_OCR_INTERVAL = 1.0
+_OCR_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gatekeeper-ocr")
 
 
 def _cache_for(state: Any) -> dict[str, Any]:
@@ -26,7 +28,7 @@ def _cache_for(state: Any) -> dict[str, Any]:
             "consensus": "", "agreement": 0.0, "frame_id": None,
             "box": None, "updated_at": 0.0, "last_seen": 0.0,
             "last_requested_frame": None, "last_run": 0.0,
-            "running": False, "frame": None,
+            "running": False, "frame": None, "threshold_attempted": False,
         })
 
 
@@ -42,29 +44,63 @@ def _run_tesseract(image: Any) -> str:
         result = subprocess.run(
             ["tesseract", str(image_path), "stdout", "--psm", "7",
              "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"],
-            capture_output=True, text=True, timeout=2.5, check=False,
+            capture_output=True, text=True, timeout=2.0, check=False,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _ocr_one(name: str, image: Any) -> tuple[str, str]:
+    """Run one OCR pass and return raw text plus normalized text."""
+    from src.plate_ocr import clean_ocr_text
+    raw = _run_tesseract(image)
+    return raw, clean_ocr_text(raw)
+
+
 def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id: int | None) -> None:
     from src.gatekeeper.plate_roi import build_roi_variants
-    from src.plate_ocr import clean_ocr_text
     cache = _cache_for(state)
     try:
         variants = build_roi_variants(frame, box)
         outputs: dict[str, dict[str, str]] = {}
-        for name in ("rectified", "gray", "enhanced", "threshold"):
+        # Rectified and Enhanced are the fast primary OCR paths. They are
+        # independent, so execute them concurrently to reduce wall-clock
+        # latency without adding more Tesseract processes than CPU workers.
+        futures = {
+            _OCR_EXECUTOR.submit(_ocr_one, name, variants[name]): name
+            for name in ("rectified", "enhanced")
+        }
+        for future in as_completed(futures):
+            name = futures[future]
             try:
-                raw = _run_tesseract(variants[name])
-                outputs[name] = {"raw": raw, "text": clean_ocr_text(raw)}
+                raw, text = future.result()
+                outputs[name] = {"raw": raw, "text": text}
             except FileNotFoundError:
                 with _OCR_CACHE_LOCK:
-                    cache.update({"status": "UNAVAILABLE", "available": False, "error": "Tesseract is not installed", "outputs": outputs})
+                    cache.update({"status": "UNAVAILABLE", "available": False,
+                                  "error": "Tesseract is not installed", "outputs": outputs})
                 return
             except subprocess.TimeoutExpired:
                 outputs[name] = {"raw": "", "text": ""}
-        values = [item["text"] for item in outputs.values() if item["text"]]
+
+        primary_values = [outputs[name]["text"] for name in ("rectified", "enhanced") if outputs.get(name, {}).get("text")]
+        # Threshold is deliberately a fallback: it is useful when the two
+        # primary variants disagree, but running it on every frame costs an
+        # additional Tesseract process and was the main source of latency.
+        threshold_attempted = False
+        if not primary_values or len(set(primary_values)) > 1:
+            threshold_attempted = True
+            try:
+                raw, text = _ocr_one("threshold", variants["threshold"])
+                outputs["threshold"] = {"raw": raw, "text": text}
+            except FileNotFoundError:
+                with _OCR_CACHE_LOCK:
+                    cache.update({"status": "UNAVAILABLE", "available": False,
+                                  "error": "Tesseract is not installed", "outputs": outputs})
+                return
+            except subprocess.TimeoutExpired:
+                outputs["threshold"] = {"raw": "", "text": ""}
+
+        values = [item["text"] for item in outputs.values() if item.get("text")]
         counts = {value: values.count(value) for value in set(values)}
         consensus = max(counts, key=counts.get) if counts else ""
         agreement = counts[consensus] / len(values) if values and consensus else 0.0
@@ -72,7 +108,8 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
             cache.update({"status": "LIVE", "available": True, "error": "",
                           "outputs": outputs, "consensus": consensus,
                           "agreement": agreement, "frame_id": frame_id,
-                          "box": box, "updated_at": time.monotonic()})
+                          "box": box, "updated_at": time.monotonic(),
+                          "threshold_attempted": threshold_attempted})
     except Exception as exc:
         logging.getLogger("gatekeeper").exception("Live OCR worker failed")
         with _OCR_CACHE_LOCK:
@@ -83,7 +120,7 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
 
 
 def _refresh_ocr(state: Any) -> dict[str, Any]:
-    """Return cached OCR immediately and schedule a throttled background refresh."""
+    """Return cached OCR immediately and schedule a low-rate background refresh."""
     cache = _cache_for(state)
     now = time.monotonic()
     with state._lock:
@@ -93,22 +130,35 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
         frame_copy = frame.copy() if frame is not None and box is not None else None
     with _OCR_CACHE_LOCK:
         if box is not None and frame_copy is not None:
+            current_box = tuple(box)
             cache["last_seen"] = now
-            cache["box"] = tuple(box)
+            cache["box"] = current_box
             cache["frame"] = frame_copy
-            if (not cache["running"] and frame_id != cache["last_requested_frame"]
-                    and now - cache["last_run"] >= _OCR_INTERVAL):
+            should_run = (
+                not cache["running"]
+                and now - cache["last_run"] >= _OCR_INTERVAL
+                and (
+                    frame_id != cache["last_requested_frame"]
+                    or current_box != cache.get("requested_box")
+                )
+            )
+            if should_run:
                 cache["running"] = True
                 cache["last_requested_frame"] = frame_id
+                cache["requested_box"] = current_box
                 cache["last_run"] = now
-                threading.Thread(target=_ocr_worker, args=(state, frame_copy, tuple(box), frame_id), daemon=True).start()
+                threading.Thread(
+                    target=_ocr_worker,
+                    args=(state, frame_copy, current_box, frame_id),
+                    daemon=True,
+                ).start()
             if cache["status"] in {"NO_PLATE", "STALE"}:
                 cache["status"] = "RUNNING"
         elif now - cache["last_seen"] > _OCR_TTL:
             cache.update({"status": "NO_PLATE", "available": False,
                           "error": "Plate ROI not available", "outputs": {},
                           "consensus": "", "agreement": 0.0, "box": None,
-                          "frame": None})
+                          "frame": None, "threshold_attempted": False})
         elif cache["status"] == "LIVE":
             cache["status"] = "STALE"
         result = {k: v for k, v in cache.items() if k != "frame"}

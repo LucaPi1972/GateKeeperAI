@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.1</title>
+  <title>GateKeeper AI 0.8.2</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.1</h1></div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.2</h1></div>
         <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
@@ -30,14 +30,14 @@
     </section>
 
     <section class="roi-preview-card">
-      <div class="title-row roi-title-row"><div><p class="eyebrow">OCR TEST</p><h2>Live OCR comparison</h2></div><span id="ocr_consensus" class="roi-box-label">Waiting...</span></div>
+      <div class="title-row roi-title-row"><div><p class="eyebrow">OCR TEST</p><h2>Live OCR comparison</h2></div><span id="ocr_consensus" class="roi-box-label">NO PLATE</span></div>
       <div class="live-info-grid">
         <article class="status-card compact-card"><p class="eyebrow">Rectified</p><dd id="ocr_rectified">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Grayscale</p><dd id="ocr_gray">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Enhanced</p><dd id="ocr_enhanced">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Threshold</p><dd id="ocr_threshold">—</dd></article>
       </div>
-      <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR test waiting for a selected plate...</p>
+      <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR status: NO PLATE</p>
     </section>
 
     <section class="live-info-grid">
@@ -50,15 +50,20 @@
   </main>
   <script>
     function setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
-    function refreshRoi(box) {
-      if (!box) { setText('roi_box', 'No plate selected'); setText('roi_status', 'Waiting for plate detection...'); return; }
-      setText('roi_box', `Box ${box}`); const stamp = Date.now();
-      for (const variant of ['original','rectified','gray','enhanced','threshold']) { const image = document.getElementById(`roi_${variant}`); if (image) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`; }
-      setText('roi_status', 'ROI updated from the currently selected plate.');
+    function refreshRoi(box, status) {
+      if (!box && status === 'NO_PLATE') { setText('roi_box', 'No plate selected'); setText('roi_status', 'Waiting for plate detection...'); return; }
+      if (box) setText('roi_box', `Box ${box}`);
+      const stamp = Date.now();
+      for (const variant of ['original','rectified','gray','enhanced','threshold']) {
+        const image = document.getElementById(`roi_${variant}`);
+        if (image && (box || status === 'STALE' || status === 'LIVE' || status === 'RUNNING')) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
+      }
+      setText('roi_status', status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'ROI updated from the selected plate.');
     }
     async function refreshStatus() {
-      try { const response = await fetch('/api/frame_info', {cache:'no-store'}); const status = await response.json();
-        setText('motion_state', status.motion ?? 'UNKNOWN'); setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`); setText('fps', status.fps ?? 0); setText('confidence', status.confidence == null ? 'n/a' : Number(status.confidence).toFixed(3)); setText('plate_found', status.plate_found ? 'Detected' : 'Not detected'); setText('plate_box', status.plate_box || 'n/a'); setText('candidate_count', status.candidate_count ?? 0); setText('selected_candidate', status.selected_candidate || 'n/a'); setText('rejected_candidates', status.rejected_candidates ?? 0); setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a'); setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase()); refreshRoi(status.plate_box);
+      try {
+        const response = await fetch('/api/frame_info', {cache:'no-store'}); const status = await response.json();
+        setText('motion_state', status.motion ?? 'UNKNOWN'); setText('resolution', `${status.width ?? '?'}x${status.height ?? '?'}`); setText('fps', status.fps ?? 0); setText('confidence', status.confidence == null ? 'n/a' : Number(status.confidence).toFixed(3)); setText('plate_found', status.plate_found ? 'Detected' : 'Not detected'); setText('plate_box', status.plate_box || 'n/a'); setText('candidate_count', status.candidate_count ?? 0); setText('selected_candidate', status.selected_candidate || 'n/a'); setText('rejected_candidates', status.rejected_candidates ?? 0); setText('camera_orientation', status.camera_orientation ? JSON.stringify(status.camera_orientation) : 'n/a'); setText('live_preview_pipeline', (status.preview_pipeline || 'bgr').toUpperCase());
       } catch (error) { setText('motion_state','OFFLINE'); }
     }
     async function refreshCalibration() {
@@ -67,15 +72,20 @@
       } catch (error) { setText('cal_mode','OFFLINE'); }
     }
     async function refreshOcr() {
-      try { const response = await fetch('/api/plate_ocr', {cache:'no-store'}); const payload = await response.json();
-        if (!payload.available) { setText('ocr_status', payload.error || 'OCR unavailable'); return; }
-        for (const key of ['rectified','gray','enhanced','threshold']) setText(`ocr_${key}`, payload.outputs?.[key]?.text || '—');
-        setText('ocr_consensus', payload.consensus ? `${payload.consensus} (${Math.round(payload.agreement*100)}%)` : 'No consensus'); setText('ocr_status', 'OCR comparison active.');
-      } catch (error) { setText('ocr_status','OCR offline'); }
+      try {
+        const response = await fetch('/api/plate_ocr', {cache:'no-store'}); const payload = await response.json();
+        const status = payload.status || 'NO_PLATE';
+        setText('ocr_consensus', status === 'NO_PLATE' ? 'NO PLATE' : (payload.consensus ? `${payload.consensus} (${Math.round(payload.agreement*100)}%)` : status));
+        for (const key of ['rectified','gray','enhanced','threshold']) setText(`ocr_${key}`, payload.outputs?.[key]?.text || (status === 'NO_PLATE' ? '—' : '...'));
+        const age = payload.age == null ? '' : ` • ${payload.age.toFixed(1)}s`;
+        const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}`, STALE:`OCR status: STALE${age}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
+        setText('ocr_status', messages[status] || `OCR status: ${status}${age}`);
+        refreshRoi(payload.box, status);
+      } catch (error) { setText('ocr_status','OCR status: OFFLINE'); }
     }
     async function saveCalibration() { const label=document.getElementById('calibration_status'); const response=await fetch('/api/plate_calibration/save',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
     async function saveSnapshot() { const label=document.getElementById('snapshot_status'); const response=await fetch('/api/snapshot',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
-    document.getElementById('snapshot_button').addEventListener('click',saveSnapshot); document.getElementById('calibration_button').addEventListener('click',saveCalibration); refreshStatus(); refreshCalibration(); refreshOcr(); setInterval(()=>{refreshStatus();refreshCalibration();refreshOcr();},1500);
+    document.getElementById('snapshot_button').addEventListener('click',saveSnapshot); document.getElementById('calibration_button').addEventListener('click',saveCalibration); refreshStatus(); refreshCalibration(); refreshOcr(); setInterval(()=>{refreshStatus();refreshCalibration();refreshOcr();},1000);
   </script>
 </body>
 </html>

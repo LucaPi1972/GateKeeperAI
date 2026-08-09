@@ -132,18 +132,44 @@ def fuse_temporal_results(results: Iterable[Dict[str, Any]], *, max_items: int =
     mean_score = best["score"] / best["count"] if best["count"] else 0.0
     confidence = 100.0 * (0.75 * agreement + 0.25 * mean_score)
 
-    # Once PLATE LOCK has established a stationary, geometrically valid plate,
-    # one strong 7-character Enhanced read is sufficient to avoid two extra
-    # serial Tesseract launches. The displayed sample count is therefore the
-    # effective confirmation count, while ocr_runs/valid_runs remain the real
-    # process counters.
-    fast_confirm = bool(
-        raw_samples == 1
-        and len(best_text) == PLATE_LENGTH
-        and agreement >= 1.0
-        and mean_score >= 0.85
-        and bool(items[-1].get("frame_id", "")).startswith("lock:")
-    )
+    # A static plate may have accumulated pre-lock history before PLATE LOCK.
+    # For fast confirmation, evaluate only reads explicitly tagged as lock reads.
+    # This guarantees that the first strong Enhanced read after locking can
+    # confirm immediately instead of waiting for two more serial Tesseract runs.
+    locked_items = [
+        item for item in items
+        if str(item.get("frame_id", "")).startswith("lock:")
+    ]
+    locked_buckets: Dict[str, Dict[str, float]] = {}
+    for item in locked_items:
+        text = context_correct(str(item.get("text", "")))
+        if not text:
+            continue
+        bucket = locked_buckets.setdefault(text, {"count": 0.0, "score": 0.0})
+        bucket["count"] += 1.0
+        bucket["score"] += float(item.get("score", 0.0))
+
+    fast_confirm = False
+    if locked_buckets:
+        locked_text, locked_best = max(
+            locked_buckets.items(),
+            key=lambda pair: (pair[1]["count"], pair[1]["score"]),
+        )
+        locked_samples = sum(bucket["count"] for bucket in locked_buckets.values())
+        locked_agreement = locked_best["count"] / locked_samples if locked_samples else 0.0
+        locked_mean_score = locked_best["score"] / locked_best["count"] if locked_best["count"] else 0.0
+        if (
+            locked_samples == 1
+            and len(locked_text) == PLATE_LENGTH
+            and locked_agreement >= 1.0
+            and locked_mean_score >= 0.85
+        ):
+            fast_confirm = True
+            best_text = locked_text
+            agreement = locked_agreement
+            mean_score = locked_mean_score
+            confidence = 100.0 * (0.75 * agreement + 0.25 * mean_score)
+
     samples = 3 if fast_confirm else int(raw_samples)
 
     return {

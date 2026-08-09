@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.3</title>
+  <title>GateKeeper AI 0.8.4</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.3</h1></div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.4</h1></div>
         <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
@@ -32,9 +32,9 @@
     <section class="roi-preview-card">
       <div class="title-row roi-title-row"><div><p class="eyebrow">OCR TEST</p><h2>Live OCR comparison</h2></div><span id="ocr_consensus" class="roi-box-label">NO PLATE</span></div>
       <div class="live-info-grid">
+        <article class="status-card compact-card"><p class="eyebrow">Enhanced</p><dd id="ocr_enhanced">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Rectified</p><dd id="ocr_rectified">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Grayscale</p><dd id="ocr_gray">DIAGNOSTIC</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Enhanced</p><dd id="ocr_enhanced">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Threshold</p><dd id="ocr_threshold">FALLBACK</dd></article>
       </div>
       <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR status: NO PLATE</p>
@@ -56,7 +56,7 @@
       const stamp = Date.now();
       for (const variant of ['original','rectified','gray','enhanced','threshold']) {
         const image = document.getElementById(`roi_${variant}`);
-        if (image && (box || status === 'STALE' || status === 'LIVE' || status === 'RUNNING')) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
+        if (image && (box || status === 'STALE' || status === 'LIVE' || status === 'RUNNING' || status === 'NO_TEXT')) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
       }
       setText('roi_status', status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'ROI updated from the selected plate.');
     }
@@ -76,19 +76,20 @@
         const response = await fetch('/api/plate_ocr', {cache:'no-store'}); const payload = await response.json();
         const status = payload.status || 'NO_PLATE';
         setText('ocr_consensus', status === 'NO_PLATE' ? 'NO PLATE' : (payload.consensus ? `${payload.consensus} (${Math.round(payload.agreement*100)}%)` : status));
+        setText('ocr_enhanced', payload.outputs?.enhanced?.text || (status === 'NO_PLATE' ? '—' : '...'));
         setText('ocr_rectified', payload.outputs?.rectified?.text || (status === 'NO_PLATE' ? '—' : '...'));
         setText('ocr_gray', 'DIAGNOSTIC');
-        setText('ocr_enhanced', payload.outputs?.enhanced?.text || (status === 'NO_PLATE' ? '—' : '...'));
         setText('ocr_threshold', payload.outputs?.threshold?.text || (payload.threshold_attempted ? (status === 'NO_PLATE' ? '—' : '...') : 'FALLBACK'));
         const age = payload.age == null ? '' : ` • ${payload.age.toFixed(1)}s`;
-        const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}`, STALE:`OCR status: STALE${age}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
+        const duration = payload.duration == null ? '' : ` • OCR ${Number(payload.duration).toFixed(1)}s`;
+        const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}${duration}`, STALE:`OCR status: STALE${age}`, NO_TEXT:`OCR status: NO TEXT${age}${duration}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
         setText('ocr_status', messages[status] || `OCR status: ${status}${age}`);
         refreshRoi(payload.box, status);
       } catch (error) { setText('ocr_status','OCR status: OFFLINE'); }
     }
     async function saveCalibration() { const label=document.getElementById('calibration_status'); const response=await fetch('/api/plate_calibration/save',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
     async function saveSnapshot() { const label=document.getElementById('snapshot_status'); const response=await fetch('/api/snapshot',{method:'POST'}); const payload=await response.json(); label.textContent=response.ok?`Saved ${payload.filename}`:payload.error; }
-    document.getElementById('snapshot_button').addEventListener('click',saveSnapshot); document.getElementById('calibration_button').addEventListener('click',saveCalibration); refreshStatus(); refreshCalibration(); refreshOcr(); setInterval(()=>{refreshStatus();refreshCalibration();refreshOcr();},1000);
+    document.getElementById('snapshot_button').addEventListener('click',saveSnapshot); document.getElementById('calibration_button').addEventListener('click',saveCalibration); refreshStatus(); refreshCalibration(); refreshOcr(); setInterval(()=>{refreshStatus();refreshCalibration();refreshOcr();},800);
   </script>
 </body>
 </html>

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+- Make Live OCR asynchronous and throttled instead of running four Tesseract jobs inside the HTTP request.
+- Refresh OCR approximately every 0.5 seconds when a new selected frame is available.
+- Expose explicit OCR states: `NO_PLATE`, `RUNNING`, `LIVE`, `STALE`, `UNAVAILABLE`, and `ERROR`.
+- Show OCR result age so an old result cannot be mistaken for a current reading.
+- Retain the last valid ROI briefly when the detector temporarily loses the plate, while clearly marking the OCR state as `STALE`.
+- Clear OCR results after the retention timeout when no valid plate is available.
+- Keep PlateDetector, temporal selection, Reading Zone, camera color handling, BGR Live Preview, FRAME_MASTER, Motion Detection, and ROI generation unchanged.
+- Update the single-screen HTTP Live Preview to refresh OCR every second and display the current OCR state.
+
 ## 0.8.1
 
 - Add an optional live OCR test stage after Plate ROI preparation.

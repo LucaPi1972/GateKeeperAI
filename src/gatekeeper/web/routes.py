@@ -14,11 +14,15 @@ from typing import Any
 _OCR_CACHE: dict[int, dict[str, Any]] = {}
 _OCR_CACHE_LOCK = threading.RLock()
 _OCR_TTL = 2.5
-_OCR_INTERVAL = 0.8
+_OCR_INTERVAL = 0.7
 _OCR_HISTORY_SIZE = 8
-_OCR_FREEZE_TTL = 8.0
-_OCR_FREEZE_RETRIES = 3
+_OCR_FREEZE_TTL = 12.0
+_OCR_FREEZE_RETRIES = 6
 _OCR_MAX_ANGLE = 30.0
+_OCR_STABLE_WINDOW = 1.0
+_OCR_STABLE_IOU = 0.90
+_OCR_STABLE_BOX_TOL = 0.10
+_OCR_STABLE_ANGLE_TOL = 3.0
 
 
 def _cache_for(state: Any) -> dict[str, Any]:
@@ -33,6 +37,8 @@ def _cache_for(state: Any) -> dict[str, Any]:
             "ocr_runs": 0, "valid_runs": 0, "stable": False,
             "frozen_frame": None, "frozen_frame_id": None, "frozen_box": None,
             "freeze_started": 0.0, "freeze_attempts": 0, "plate_angle": None,
+            "stable_since": 0.0, "plate_locked": False, "lock_started": 0.0,
+            "lock_frame_id": None, "lock_box": None, "lock_angle": None,
         })
 
 
@@ -46,6 +52,15 @@ def _box_iou(first: tuple[int, int, int, int] | None, second: tuple[int, int, in
     intersection = float(iw * ih)
     union = float(aw * ah + bw * bh) - intersection
     return intersection / union if union > 0 else 0.0
+
+
+def _box_geometry_stable(first: tuple[int, int, int, int] | None, second: tuple[int, int, int, int] | None) -> bool:
+    if first is None or second is None:
+        return False
+    _, _, aw, ah = first; _, _, bw, bh = second
+    if aw <= 0 or ah <= 0:
+        return False
+    return abs(bw - aw) / aw <= _OCR_STABLE_BOX_TOL and abs(bh - ah) / ah <= _OCR_STABLE_BOX_TOL
 
 
 def _selected_angle(state: Any, box: tuple[int, int, int, int] | None) -> float | None:
@@ -115,19 +130,20 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
     try:
         variants = build_roi_variants(frame, box, margin_ratio=0.05)
         result = _ocr_enhanced(variants["enhanced"])
-        history_item = {"text": result.get("corrected", ""), "score": result.get("score", 0.0), "engine_confidence": result.get("engine_confidence"), "format_score": result.get("format_score", 0.0), "frame_id": frame_id}
         with _OCR_CACHE_LOCK:
             cache["ocr_runs"] = int(cache.get("ocr_runs", 0)) + 1
             if result.get("corrected"):
                 cache["valid_runs"] = int(cache.get("valid_runs", 0)) + 1
             history = cache.setdefault("history", [])
-            if history and history[-1].get("frame_id") == frame_id:
+            locked = bool(cache.get("plate_locked"))
+            history_item = {"text": result.get("corrected", ""), "score": result.get("score", 0.0), "engine_confidence": result.get("engine_confidence"), "format_score": result.get("format_score", 0.0), "frame_id": (f"lock:{cache.get('ocr_runs')}" if locked else frame_id)}
+            if history and history[-1].get("frame_id") == history_item["frame_id"]:
                 history[-1] = history_item
             else:
                 history.append(history_item); del history[:-_OCR_HISTORY_SIZE]
             fused = _fuse_history(cache); text = fused.get("text", "")
             stable = bool(fused.get("samples", 0) >= 3 and fused.get("agreement", 0.0) >= 0.67 and fused.get("confidence", 0.0) >= 70.0)
-            cache.update({"status": "LIVE" if text else "NO_TEXT", "available": True, "error": "", "outputs": {"enhanced": result}, "consensus": text, "agreement": fused.get("agreement", 0.0), "confidence": fused.get("confidence", 0.0), "format_score": result.get("format_score", 0.0), "samples": fused.get("samples", 0), "frame_id": frame_id, "box": box, "updated_at": time.monotonic(), "duration": round(time.monotonic() - started, 2), "stable": stable})
+            cache.update({"status": "LOCKED" if cache.get("plate_locked") else ("LIVE" if text else "NO_TEXT"), "available": True, "error": "", "outputs": {"enhanced": result}, "consensus": text, "agreement": fused.get("agreement", 0.0), "confidence": fused.get("confidence", 0.0), "format_score": result.get("format_score", 0.0), "samples": fused.get("samples", 0), "frame_id": frame_id, "box": box, "updated_at": time.monotonic(), "duration": round(time.monotonic() - started, 2), "stable": stable})
     except FileNotFoundError:
         with _OCR_CACHE_LOCK: cache.update({"status": "UNAVAILABLE", "available": False, "error": "Tesseract is not installed"})
     except subprocess.TimeoutExpired:
@@ -146,7 +162,7 @@ def _start_ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], fr
 
 
 def _clear_no_plate(cache: dict[str, Any]) -> None:
-    cache.update({"status": "NO_PLATE", "available": False, "error": "Plate ROI not available", "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0, "format_score": 0.0, "samples": 0, "box": None, "history": [], "ocr_runs": 0, "valid_runs": 0, "stable": False, "duration": None, "frozen_frame": None, "frozen_frame_id": None, "frozen_box": None, "freeze_started": 0.0, "freeze_attempts": 0, "plate_angle": None})
+    cache.update({"status": "NO_PLATE", "available": False, "error": "Plate ROI not available", "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0, "format_score": 0.0, "samples": 0, "box": None, "history": [], "ocr_runs": 0, "valid_runs": 0, "stable": False, "duration": None, "frozen_frame": None, "frozen_frame_id": None, "frozen_box": None, "freeze_started": 0.0, "freeze_attempts": 0, "plate_angle": None, "stable_since": 0.0, "plate_locked": False, "lock_started": 0.0, "lock_frame_id": None, "lock_box": None, "lock_angle": None})
 
 
 def _reset_track(cache: dict[str, Any]) -> None:
@@ -157,6 +173,13 @@ def _release_freeze(cache: dict[str, Any]) -> None:
     cache["frozen_frame"] = None; cache["frozen_frame_id"] = None; cache["frozen_box"] = None; cache["freeze_started"] = 0.0; cache["freeze_attempts"] = 0
 
 
+def _unlock_plate(cache: dict[str, Any], *, clear_history: bool = False) -> None:
+    _release_freeze(cache)
+    cache["plate_locked"] = False; cache["lock_started"] = 0.0; cache["lock_frame_id"] = None; cache["lock_box"] = None; cache["lock_angle"] = None; cache["stable_since"] = 0.0
+    if clear_history:
+        _reset_track(cache)
+
+
 def _refresh_ocr(state: Any) -> dict[str, Any]:
     cache = _cache_for(state); now = time.monotonic()
     with state._lock:
@@ -164,34 +187,45 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
         live_copy = live_frame.copy() if live_frame is not None and live_box is not None else None
     with _OCR_CACHE_LOCK:
         if live_box is not None and live_copy is not None:
-            current_box = tuple(live_box); angle = _selected_angle(state, current_box); cache["last_seen"] = now; cache["plate_angle"] = angle
+            current_box = tuple(live_box); angle = _selected_angle(state, current_box); cache["last_seen"] = now
             if angle is not None and angle > _OCR_MAX_ANGLE:
-                _release_freeze(cache); _reset_track(cache); cache.update({"status": "ANGLE_REJECTED", "available": True, "error": f"Plate angle {angle:.1f}° exceeds ±{_OCR_MAX_ANGLE:.0f}°", "box": current_box, "updated_at": now})
+                _unlock_plate(cache, clear_history=True); cache.update({"status": "ANGLE_REJECTED", "available": True, "error": f"Plate angle {angle:.1f}° exceeds ±{_OCR_MAX_ANGLE:.0f}°", "box": current_box, "updated_at": now, "plate_angle": angle})
             else:
-                previous_box = cache.get("box")
-                if previous_box is not None and _box_iou(tuple(previous_box), current_box) < 0.25 and not cache.get("running"):
-                    _reset_track(cache); _release_freeze(cache)
-                if cache["frozen_frame"] is None:
-                    cache["frozen_frame"] = live_copy; cache["frozen_frame_id"] = live_frame_id; cache["frozen_box"] = current_box; cache["freeze_started"] = now; cache["freeze_attempts"] = 0
-                if now - float(cache.get("freeze_started", 0.0)) > _OCR_FREEZE_TTL:
-                    _release_freeze(cache); cache["frozen_frame"] = live_copy; cache["frozen_frame_id"] = live_frame_id; cache["frozen_box"] = current_box; cache["freeze_started"] = now; cache["freeze_attempts"] = 0
-                frozen_frame = cache["frozen_frame"]; frozen_id = cache["frozen_frame_id"]; frozen_box = tuple(cache["frozen_box"] or current_box); attempts = int(cache.get("freeze_attempts", 0))
-                should_run = (not cache["running"] and attempts < _OCR_FREEZE_RETRIES and now - cache["last_run"] >= _OCR_INTERVAL)
-                if should_run and frozen_frame is not None:
-                    cache["running"] = True; cache["last_run"] = now; cache["freeze_attempts"] = attempts + 1; _start_ocr_worker(state, frozen_frame.copy(), frozen_box, frozen_id)
-                if cache.get("updated_at", 0.0) and not cache.get("running") and cache.get("consensus"):
-                    _release_freeze(cache)
-                elif attempts >= _OCR_FREEZE_RETRIES and not cache.get("running"):
-                    _release_freeze(cache)
-                cache["status"] = "LIVE" if cache.get("consensus") else ("RUNNING" if cache.get("running") else "NO_TEXT")
+                previous_box = cache.get("box"); previous_angle = cache.get("plate_angle")
+                geometry_ok = previous_box is not None and _box_iou(tuple(previous_box), current_box) >= _OCR_STABLE_IOU and _box_geometry_stable(tuple(previous_box), current_box) and (previous_angle is None or angle is None or abs(float(previous_angle) - float(angle)) <= _OCR_STABLE_ANGLE_TOL)
+                if geometry_ok:
+                    if not cache.get("stable_since"):
+                        cache["stable_since"] = now
+                else:
+                    cache["stable_since"] = now
+                    if previous_box is not None and _box_iou(tuple(previous_box), current_box) < 0.25 and not cache.get("running"):
+                        _unlock_plate(cache, clear_history=True)
+                cache["box"] = current_box
+                cache["plate_angle"] = angle
+                if not cache.get("plate_locked") and now - float(cache.get("stable_since", now)) >= _OCR_STABLE_WINDOW:
+                    cache["plate_locked"] = True; cache["lock_started"] = now; cache["lock_frame_id"] = live_frame_id; cache["lock_box"] = current_box; cache["lock_angle"] = angle
+                    cache["frozen_frame"] = live_copy; cache["frozen_frame_id"] = live_frame_id; cache["frozen_box"] = current_box; cache["freeze_started"] = now; cache["freeze_attempts"] = 0; cache["status"] = "LOCKED"
+                if cache.get("plate_locked"):
+                    frozen_frame = cache.get("frozen_frame"); frozen_id = cache.get("frozen_frame_id"); frozen_box = tuple(cache.get("frozen_box") or current_box); attempts = int(cache.get("freeze_attempts", 0))
+                    if now - float(cache.get("lock_started", now)) > _OCR_FREEZE_TTL:
+                        _unlock_plate(cache, clear_history=True); cache["status"] = "STABILIZING"
+                    elif cache.get("stable"):
+                        cache["status"] = "CONFIRMED"
+                    else:
+                        should_run = (not cache["running"] and attempts < _OCR_FREEZE_RETRIES and now - cache["last_run"] >= _OCR_INTERVAL)
+                        if should_run and frozen_frame is not None:
+                            cache["running"] = True; cache["last_run"] = now; cache["freeze_attempts"] = attempts + 1; _start_ocr_worker(state, frozen_frame.copy(), frozen_box, frozen_id)
+                        cache["status"] = "LOCKED" if cache.get("consensus") else ("OCR_RUNNING" if cache.get("running") else "LOCKED")
+                else:
+                    cache["status"] = "STABILIZING"
         elif now - cache["last_seen"] > _OCR_TTL:
             _clear_no_plate(cache)
-        elif cache["status"] in {"LIVE", "NO_TEXT"}:
+        elif cache["status"] in {"LIVE", "NO_TEXT", "LOCKED", "CONFIRMED"}:
             cache["status"] = "STALE"
         result = {k: v for k, v in cache.items() if k not in {"frame", "frozen_frame"}}
         result["age"] = round(max(0.0, now - result["updated_at"]), 2) if result["updated_at"] else None
         result["valid_rate"] = round((result["valid_runs"] / result["ocr_runs"]) * 100.0, 1) if result["ocr_runs"] else 0.0
-        result["frozen"] = bool(cache.get("frozen_frame") is not None); result["freeze_attempts"] = int(cache.get("freeze_attempts", 0)); result["angle_limit"] = _OCR_MAX_ANGLE
+        result["frozen"] = bool(cache.get("frozen_frame") is not None); result["freeze_attempts"] = int(cache.get("freeze_attempts", 0)); result["angle_limit"] = _OCR_MAX_ANGLE; result["stable_window"] = _OCR_STABLE_WINDOW
     return result
 
 

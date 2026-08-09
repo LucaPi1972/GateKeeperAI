@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.5</title>
+  <title>GateKeeper AI 0.8.6</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.5</h1></div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.6</h1></div>
         <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
@@ -42,6 +42,12 @@
         <article class="status-card compact-card"><p class="eyebrow">Agreement</p><dd id="ocr_agreement">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Format</p><dd id="ocr_format">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Samples</p><dd id="ocr_samples">—</dd></article>
+      </div>
+      <div class="live-info-grid">
+        <article class="status-card compact-card"><p class="eyebrow">Stability</p><dd id="ocr_stability">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Valid Runs</p><dd id="ocr_valid_runs">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Valid Rate</p><dd id="ocr_valid_rate">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">OCR Time</p><dd id="ocr_duration">—</dd></article>
       </div>
       <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR status: NO PLATE</p>
     </section>
@@ -87,6 +93,10 @@
         const marginTexts = ['original_margin','enhanced_5','wide_margin'].map(key => payload.outputs?.[key]?.corrected || payload.outputs?.[key]?.text).filter(Boolean); setText('ocr_margins', marginTexts.length ? marginTexts.join(' / ') : '—');
         setText('ocr_threshold', payload.outputs?.threshold?.corrected || payload.outputs?.threshold?.text || (payload.threshold_attempted ? '...' : 'FALLBACK'));
         setText('ocr_confidence', payload.confidence == null ? '—' : `${Number(payload.confidence).toFixed(0)}%`); setText('ocr_agreement', payload.agreement == null ? '—' : `${(Number(payload.agreement)*100).toFixed(0)}%`); setText('ocr_format', payload.format_score == null ? '—' : `${(Number(payload.format_score)*100).toFixed(0)}%`); setText('ocr_samples', payload.samples == null ? '—' : payload.samples);
+        setText('ocr_stability', payload.stable ? 'YES' : (payload.samples ? 'BUILDING' : '—'));
+        setText('ocr_valid_runs', payload.valid_runs == null ? '—' : `${payload.valid_runs}/${payload.ocr_runs ?? 0}`);
+        setText('ocr_valid_rate', payload.valid_rate == null ? '—' : `${Number(payload.valid_rate).toFixed(0)}%`);
+        setText('ocr_duration', payload.duration == null ? '—' : `${Number(payload.duration).toFixed(1)}s`);
         const age = payload.age == null ? '' : ` • ${payload.age.toFixed(1)}s`; const duration = payload.duration == null ? '' : ` • OCR ${Number(payload.duration).toFixed(1)}s`;
         const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}${duration}`, STALE:`OCR status: STALE${age}`, NO_TEXT:`OCR status: NO TEXT${age}${duration}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
         setText('ocr_status', messages[status] || `OCR status: ${status}${age}`); refreshRoi(payload.box, status);

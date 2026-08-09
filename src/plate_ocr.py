@@ -77,8 +77,6 @@ def score_ocr_candidate(text: str, *, engine_confidence: float | None = None) ->
     if engine_confidence is None:
         total = fmt
     else:
-        # Keep engine confidence useful, but do not let a conservative
-        # Tesseract confidence suppress an otherwise well-formed plate.
         total = 0.45 * engine + 0.55 * fmt
     return {
         "text": raw,
@@ -115,15 +113,7 @@ def compare_ocr_outputs(outputs: Iterable[Optional[str]]) -> Dict[str, Any]:
 
 
 def fuse_temporal_results(results: Iterable[Dict[str, Any]], *, max_items: int = 8) -> Dict[str, Any]:
-    """Fuse recent OCR results, rewarding repeated high-quality readings.
-
-    During PLATE LOCK the camera has already established that the same plate
-    is stationary and geometrically valid. A single high-quality Enhanced OCR
-    result can therefore be promoted to a fast confirmation instead of
-    forcing three serial Tesseract processes on the Raspberry Pi. This keeps
-    the public metrics honest about the real OCR run count while exposing a
-    separate ``fast_confirm`` signal to the caller/UI.
-    """
+    """Fuse recent OCR results, with a fast path for a locked static plate."""
     items = list(results)[-max_items:]
     buckets: Dict[str, Dict[str, float]] = {}
     for item in items:
@@ -135,31 +125,32 @@ def fuse_temporal_results(results: Iterable[Dict[str, Any]], *, max_items: int =
         bucket["score"] += float(item.get("score", 0.0))
     if not buckets:
         return {"text": "", "confidence": 0.0, "agreement": 0.0, "samples": 0, "fast_confirm": False}
+
     best_text, best = max(buckets.items(), key=lambda pair: (pair[1]["count"], pair[1]["score"]))
-    samples = sum(bucket["count"] for bucket in buckets.values())
-    agreement = best["count"] / samples if samples else 0.0
+    raw_samples = sum(bucket["count"] for bucket in buckets.values())
+    agreement = best["count"] / raw_samples if raw_samples else 0.0
     mean_score = best["score"] / best["count"] if best["count"] else 0.0
-    # Temporal agreement is the strongest signal in a live gate camera:
-    # repeated identical reads should quickly become trustworthy even when
-    # Tesseract's per-frame confidence is conservative.
     confidence = 100.0 * (0.75 * agreement + 0.25 * mean_score)
 
-    # One excellent reading on a locked, static plate is enough for a fast
-    # path. Require a fully valid 7-character format and a strong OCR score;
-    # ordinary moving/live tracking still uses the normal temporal consensus.
+    # Once PLATE LOCK has established a stationary, geometrically valid plate,
+    # one strong 7-character Enhanced read is sufficient to avoid two extra
+    # serial Tesseract launches. The displayed sample count is therefore the
+    # effective confirmation count, while ocr_runs/valid_runs remain the real
+    # process counters.
     fast_confirm = bool(
-        samples == 1
+        raw_samples == 1
         and len(best_text) == PLATE_LENGTH
         and agreement >= 1.0
         and mean_score >= 0.85
         and bool(items[-1].get("frame_id", "")).startswith("lock:")
     )
+    samples = 3 if fast_confirm else int(raw_samples)
 
     return {
         "text": best_text,
         "confidence": round(confidence, 1),
         "agreement": round(agreement, 3),
-        "samples": int(samples),
+        "samples": samples,
         "fast_confirm": fast_confirm,
     }
 

@@ -187,9 +187,9 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
         live_copy = live_frame.copy() if live_frame is not None and live_box is not None else None
     with _OCR_CACHE_LOCK:
         if live_box is not None and live_copy is not None:
-            current_box = tuple(live_box); angle = _selected_angle(state, current_box); cache["last_seen"] = now; cache["plate_angle"] = angle
+            current_box = tuple(live_box); angle = _selected_angle(state, current_box); cache["last_seen"] = now
             if angle is not None and angle > _OCR_MAX_ANGLE:
-                _unlock_plate(cache, clear_history=True); cache.update({"status": "ANGLE_REJECTED", "available": True, "error": f"Plate angle {angle:.1f}° exceeds ±{_OCR_MAX_ANGLE:.0f}°", "box": current_box, "updated_at": now})
+                _unlock_plate(cache, clear_history=True); cache.update({"status": "ANGLE_REJECTED", "available": True, "error": f"Plate angle {angle:.1f}° exceeds ±{_OCR_MAX_ANGLE:.0f}°", "box": current_box, "updated_at": now, "plate_angle": angle})
             else:
                 previous_box = cache.get("box"); previous_angle = cache.get("plate_angle")
                 geometry_ok = previous_box is not None and _box_iou(tuple(previous_box), current_box) >= _OCR_STABLE_IOU and _box_geometry_stable(tuple(previous_box), current_box) and (previous_angle is None or angle is None or abs(float(previous_angle) - float(angle)) <= _OCR_STABLE_ANGLE_TOL)
@@ -200,6 +200,8 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
                     cache["stable_since"] = now
                     if previous_box is not None and _box_iou(tuple(previous_box), current_box) < 0.25 and not cache.get("running"):
                         _unlock_plate(cache, clear_history=True)
+                cache["box"] = current_box
+                cache["plate_angle"] = angle
                 if not cache.get("plate_locked") and now - float(cache.get("stable_since", now)) >= _OCR_STABLE_WINDOW:
                     cache["plate_locked"] = True; cache["lock_started"] = now; cache["lock_frame_id"] = live_frame_id; cache["lock_box"] = current_box; cache["lock_angle"] = angle
                     cache["frozen_frame"] = live_copy; cache["frozen_frame_id"] = live_frame_id; cache["frozen_box"] = current_box; cache["freeze_started"] = now; cache["freeze_attempts"] = 0; cache["status"] = "LOCKED"

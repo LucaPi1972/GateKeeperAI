@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GateKeeper AI 0.8.7</title>
+  <title>GateKeeper AI 0.8.10</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="dashboard compact-dashboard">
     <section class="preview-card">
       <div class="title-row">
-        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.7</h1></div>
+        <div><p class="eyebrow">HTTP Live Preview</p><h1>GateKeeper AI 0.8.10</h1></div>
         <div class="action-row"><button id="snapshot_button" type="button">Save Snapshot</button><button id="calibration_button" type="button">Save Calibration Frame</button></div>
       </div>
       <img src="/stream" alt="GateKeeper AI live MJPEG camera stream">
@@ -18,36 +18,27 @@
     </section>
 
     <section class="roi-preview-card">
-      <div class="title-row roi-title-row"><div><p class="eyebrow">Plate ROI</p><h2>OCR preparation preview</h2></div><span id="roi_box" class="roi-box-label">No plate selected</span></div>
-      <div class="roi-grid">
+      <div class="title-row roi-title-row"><div><p class="eyebrow">PLATE ROI</p><h2>Enhanced OCR source</h2></div><span id="roi_box" class="roi-box-label">No plate selected</span></div>
+      <div class="roi-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));max-width:900px;margin:auto">
         <article class="roi-card"><h3>Original ROI</h3><img id="roi_original" src="/plate_roi/original.jpg" alt="Selected plate original ROI"></article>
-        <article class="roi-card"><h3>Rectified</h3><img id="roi_rectified" src="/plate_roi/rectified.jpg" alt="Selected plate rectified ROI"></article>
-        <article class="roi-card"><h3>Grayscale</h3><img id="roi_gray" src="/plate_roi/gray.jpg" alt="Selected plate grayscale ROI"></article>
-        <article class="roi-card"><h3>Enhanced</h3><img id="roi_enhanced" src="/plate_roi/enhanced.jpg" alt="Selected plate enhanced ROI"></article>
-        <article class="roi-card"><h3>Adaptive Threshold</h3><img id="roi_threshold" src="/plate_roi/threshold.jpg" alt="Selected plate threshold ROI"></article>
+        <article class="roi-card"><h3>Enhanced — OCR</h3><img id="roi_enhanced" src="/plate_roi/enhanced.jpg" alt="Selected plate enhanced OCR ROI"></article>
       </div>
       <p id="roi_status" class="snapshot-status compact-status" aria-live="polite">Waiting for plate detection...</p>
     </section>
 
     <section class="roi-preview-card">
-      <div class="title-row roi-title-row"><div><p class="eyebrow">OCR ACCURACY</p><h2>Live OCR comparison</h2></div><span id="ocr_consensus" class="roi-box-label">NO PLATE</span></div>
+      <div class="title-row roi-title-row"><div><p class="eyebrow">OCR</p><h2>Enhanced live recognition</h2></div><span id="ocr_consensus" class="roi-box-label">NO PLATE</span></div>
       <div class="live-info-grid">
-        <article class="status-card compact-card"><p class="eyebrow">Enhanced</p><dd id="ocr_enhanced">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Rectified</p><dd id="ocr_rectified">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Margin Tests</p><dd id="ocr_margins">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Threshold</p><dd id="ocr_threshold">FALLBACK</dd></article>
-      </div>
-      <div class="live-info-grid">
+        <article class="status-card compact-card"><p class="eyebrow">Enhanced OCR</p><dd id="ocr_enhanced">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Confidence</p><dd id="ocr_confidence">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Agreement</p><dd id="ocr_agreement">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Format</p><dd id="ocr_format">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Samples</p><dd id="ocr_samples">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">OCR Time</p><dd id="ocr_duration">—</dd></article>
       </div>
       <div class="live-info-grid">
-        <article class="status-card compact-card"><p class="eyebrow">Stability</p><dd id="ocr_stability">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Agreement</p><dd id="ocr_agreement">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Samples</p><dd id="ocr_samples">—</dd></article>
         <article class="status-card compact-card"><p class="eyebrow">Valid Runs</p><dd id="ocr_valid_runs">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">Valid Rate</p><dd id="ocr_valid_rate">—</dd></article>
-        <article class="status-card compact-card"><p class="eyebrow">OCR Time</p><dd id="ocr_duration">—</dd></article>
+        <article class="status-card compact-card"><p class="eyebrow">Stability</p><dd id="ocr_stability">—</dd></article>
       </div>
       <p id="ocr_status" class="snapshot-status compact-status" aria-live="polite">OCR status: NO PLATE</p>
     </section>
@@ -66,11 +57,11 @@
       if (!box && status === 'NO_PLATE') { setText('roi_box', 'No plate selected'); setText('roi_status', 'Waiting for plate detection...'); return; }
       if (box) setText('roi_box', `Box ${box}`);
       const stamp = Date.now();
-      for (const variant of ['original','rectified','gray','enhanced','threshold']) {
+      for (const variant of ['original','enhanced']) {
         const image = document.getElementById(`roi_${variant}`);
         if (image && (box || ['STALE','LIVE','RUNNING','NO_TEXT'].includes(status))) image.src = `/plate_roi/${variant}.jpg?t=${stamp}`;
       }
-      setText('roi_status', status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'ROI updated from the selected plate.');
+      setText('roi_status', status === 'STALE' ? 'Showing last valid ROI — detector temporarily lost plate.' : 'Enhanced ROI used by OCR.');
     }
     async function refreshStatus() {
       try {
@@ -89,14 +80,7 @@
         const status = payload.status || 'NO_PLATE';
         setText('ocr_consensus', status === 'NO_PLATE' ? 'NO PLATE' : (payload.consensus ? `${payload.consensus} (${Number(payload.confidence||0).toFixed(0)}%)` : status));
         setText('ocr_enhanced', payload.outputs?.enhanced?.corrected || payload.outputs?.enhanced?.text || (status === 'NO_PLATE' ? '—' : '...'));
-        setText('ocr_rectified', payload.outputs?.rectified?.corrected || payload.outputs?.rectified?.text || (status === 'NO_PLATE' ? '—' : '...'));
-        const marginTexts = ['original_margin','enhanced_5','wide_margin'].map(key => payload.outputs?.[key]?.corrected || payload.outputs?.[key]?.text).filter(Boolean); setText('ocr_margins', marginTexts.length ? marginTexts.join(' / ') : '—');
-        setText('ocr_threshold', payload.outputs?.threshold?.corrected || payload.outputs?.threshold?.text || (payload.threshold_attempted ? '...' : 'FALLBACK'));
-        setText('ocr_confidence', payload.confidence == null ? '—' : `${Number(payload.confidence).toFixed(0)}%`); setText('ocr_agreement', payload.agreement == null ? '—' : `${(Number(payload.agreement)*100).toFixed(0)}%`); setText('ocr_format', payload.format_score == null ? '—' : `${(Number(payload.format_score)*100).toFixed(0)}%`); setText('ocr_samples', payload.samples == null ? '—' : payload.samples);
-        setText('ocr_stability', payload.stable ? 'YES' : (payload.samples ? 'BUILDING' : '—'));
-        setText('ocr_valid_runs', payload.valid_runs == null ? '—' : `${payload.valid_runs}/${payload.ocr_runs ?? 0}`);
-        setText('ocr_valid_rate', payload.valid_rate == null ? '—' : `${Number(payload.valid_rate).toFixed(0)}%`);
-        setText('ocr_duration', payload.duration == null ? '—' : `${Number(payload.duration).toFixed(1)}s`);
+        setText('ocr_confidence', payload.confidence == null ? '—' : `${Number(payload.confidence).toFixed(0)}%`); setText('ocr_format', payload.format_score == null ? '—' : `${(Number(payload.format_score)*100).toFixed(0)}%`); setText('ocr_agreement', payload.agreement == null ? '—' : `${(Number(payload.agreement)*100).toFixed(0)}%`); setText('ocr_samples', payload.samples == null ? '—' : payload.samples); setText('ocr_stability', payload.stable ? 'YES' : (payload.samples ? 'BUILDING' : '—')); setText('ocr_valid_runs', payload.valid_runs == null ? '—' : `${payload.valid_runs}/${payload.ocr_runs ?? 0}`); setText('ocr_duration', payload.duration == null ? '—' : `${Number(payload.duration).toFixed(1)}s`);
         const age = payload.age == null ? '' : ` • ${payload.age.toFixed(1)}s`; const duration = payload.duration == null ? '' : ` • OCR ${Number(payload.duration).toFixed(1)}s`;
         const messages = {NO_PLATE:'OCR status: NO PLATE', RUNNING:'OCR status: RUNNING', LIVE:`OCR status: LIVE${age}${duration}`, STALE:`OCR status: STALE${age}`, NO_TEXT:`OCR status: NO TEXT${age}${duration}`, UNAVAILABLE:'OCR status: TESSERACT UNAVAILABLE', ERROR:`OCR status: ERROR — ${payload.error || ''}`};
         setText('ocr_status', messages[status] || `OCR status: ${status}${age}`); refreshRoi(payload.box, status);

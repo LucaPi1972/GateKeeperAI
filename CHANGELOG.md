@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.5
+
+- Add OCR accuracy scoring based on Tesseract TSV confidence, plate-format compatibility, and normalized candidate quality.
+- Add conservative context handling for common ambiguous plate characters such as `O/0`, `I/1`, `S/5`, and `B/8` according to character position.
+- Add temporal OCR fusion across recent frames so isolated OCR errors do not immediately replace a repeated high-quality reading.
+- Test a 5% ROI margin first and broaden to 0%/10% enhanced variants only when the first result is weak; keep rectified and threshold passes available for confirmation.
+- Keep OCR asynchronous and throttled, with explicit `LIVE`, `STALE`, `NO_TEXT`, `NO_PLATE`, `UNAVAILABLE`, and `ERROR` states.
+- Expose OCR confidence, format score, temporal agreement, sample count, and per-variant diagnostics in the single-screen Live Preview.
+- Keep PlateDetector, temporal plate selection, Reading Zone, camera color handling, BGR Live Preview, FRAME_MASTER, Motion Detection, and ROI generation unchanged.
+
 ## 0.8.3
 
 - Reduce OCR latency by running the two primary OCR passes (`rectified` and `enhanced`) concurrently.

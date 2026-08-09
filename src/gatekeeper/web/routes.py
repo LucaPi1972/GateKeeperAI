@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ _OCR_CACHE: dict[int, dict[str, Any]] = {}
 _OCR_CACHE_LOCK = threading.RLock()
 _OCR_TTL = 2.5
 _OCR_INTERVAL = 0.8
-_OCR_FALLBACK_INTERVAL = 1.5
 _OCR_HISTORY_SIZE = 8
 _OCR_FREEZE_TTL = 8.0
 _OCR_FREEZE_RETRIES = 3
@@ -30,8 +28,7 @@ def _cache_for(state: Any) -> dict[str, Any]:
             "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0,
             "format_score": 0.0, "samples": 0, "frame_id": None, "box": None,
             "updated_at": 0.0, "last_seen": 0.0, "last_requested_frame": None,
-            "last_run": 0.0, "last_fallback_run": 0.0, "running": False, "frame": None,
-            "threshold_attempted": False, "duration": None, "history": [],
+            "last_run": 0.0, "running": False, "duration": None, "history": [],
             "ocr_runs": 0, "valid_runs": 0, "stable": False,
             "frozen_frame": None, "frozen_frame_id": None, "frozen_box": None,
             "freeze_started": 0.0, "freeze_attempts": 0,
@@ -39,7 +36,7 @@ def _cache_for(state: Any) -> dict[str, Any]:
 
 
 def _run_tesseract(image: Any) -> dict[str, Any]:
-    """Run one Tesseract pass and return text plus TSV confidence."""
+    """Run one local Tesseract pass on the Enhanced ROI."""
     import cv2
     if shutil.which("tesseract") is None:
         raise FileNotFoundError("Tesseract is not installed")
@@ -55,7 +52,8 @@ def _run_tesseract(image: Any) -> dict[str, Any]:
             capture_output=True, text=True, timeout=3.0, check=False,
         )
         logging.getLogger("gatekeeper").debug(
-            "Tesseract OCR completed in %.2fs rc=%s", time.monotonic() - started, result.returncode
+            "Tesseract Enhanced OCR completed in %.2fs rc=%s",
+            time.monotonic() - started, result.returncode,
         )
         if result.returncode != 0:
             return {"raw": "", "text": "", "engine_confidence": None}
@@ -75,29 +73,24 @@ def _run_tesseract(image: Any) -> dict[str, Any]:
                 if confidence >= 0:
                     confidences.append(confidence)
         raw = "".join(texts).strip()
-        return {"raw": raw, "text": raw,
-                "engine_confidence": round(sum(confidences) / len(confidences), 1) if confidences else None}
+        return {
+            "raw": raw,
+            "text": raw,
+            "engine_confidence": round(sum(confidences) / len(confidences), 1) if confidences else None,
+        }
 
 
-def _ocr_one(name: str, image: Any) -> dict[str, Any]:
+def _ocr_enhanced(image: Any) -> dict[str, Any]:
     from src.plate_ocr import score_ocr_candidate
     result = _run_tesseract(image)
     score = score_ocr_candidate(result.get("text", ""), engine_confidence=result.get("engine_confidence"))
-    result.update({"name": name, "corrected": score["corrected"],
-                   "format_score": score["format_score"], "score": score["score"]})
+    result.update({
+        "name": "enhanced",
+        "corrected": score["corrected"],
+        "format_score": score["format_score"],
+        "score": score["score"],
+    })
     return result
-
-
-def _ocr_one_safe(name: str, image: Any) -> dict[str, Any]:
-    try:
-        return _ocr_one(name, image)
-    except subprocess.TimeoutExpired:
-        return {"name": name, "raw": "", "text": "", "corrected": "",
-                "engine_confidence": None, "format_score": 0.0, "score": 0.0, "error": "timeout"}
-    except Exception as exc:
-        logging.getLogger("gatekeeper").debug("OCR fallback %s failed: %s", name, exc)
-        return {"name": name, "raw": "", "text": "", "corrected": "",
-                "engine_confidence": None, "format_score": 0.0, "score": 0.0, "error": str(exc)}
 
 
 def _fuse_history(cache: dict[str, Any]) -> dict[str, Any]:
@@ -111,58 +104,43 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
     started = time.monotonic()
     try:
         variants = build_roi_variants(frame, box, margin_ratio=0.05)
-        outputs: dict[str, dict[str, Any]] = {}
-        primary = _ocr_one("enhanced_5", variants["enhanced"])
-        outputs["enhanced"] = primary
-        best = primary
-        threshold_attempted = False
-        now = time.monotonic()
-        fallback_due = now - float(cache.get("last_fallback_run", 0.0)) >= _OCR_FALLBACK_INTERVAL
-        if primary["score"] < 0.68 and fallback_due:
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gatekeeper-ocr-fallback") as executor:
-                futures = {
-                    executor.submit(_ocr_one_safe, "rectified", variants["rectified"]): "rectified",
-                    executor.submit(_ocr_one_safe, "threshold", variants["threshold"]): "threshold",
-                }
-                for future in as_completed(futures):
-                    name = futures[future]
-                    result = future.result()
-                    outputs[name] = result
-                    if result.get("score", 0.0) > best.get("score", 0.0):
-                        best = result
-            threshold_attempted = "threshold" in outputs
-            with _OCR_CACHE_LOCK:
-                cache["last_fallback_run"] = now
-
+        result = _ocr_enhanced(variants["enhanced"])
         history_item = {
-            "text": best.get("corrected", ""),
-            "score": best.get("score", 0.0),
-            "engine_confidence": best.get("engine_confidence"),
-            "format_score": best.get("format_score", 0.0),
+            "text": result.get("corrected", ""),
+            "score": result.get("score", 0.0),
+            "engine_confidence": result.get("engine_confidence"),
+            "format_score": result.get("format_score", 0.0),
             "frame_id": frame_id,
         }
         with _OCR_CACHE_LOCK:
             history = cache.setdefault("history", [])
-            # A retry on the frozen frame is not a new temporal sample.
             if history and history[-1].get("frame_id") == frame_id:
                 history[-1] = history_item
             else:
                 history.append(history_item)
                 del history[:-_OCR_HISTORY_SIZE]
             fused = _fuse_history(cache)
-            status = "LIVE" if fused.get("text") else "NO_TEXT"
-            cache["ocr_runs"] = int(cache.get("ocr_runs", 0)) + 1
-            if fused.get("text"):
-                cache["valid_runs"] = int(cache.get("valid_runs", 0)) + 1
-            stable = bool(fused.get("samples", 0) >= 3 and fused.get("agreement", 0.0) >= 0.67
-                          and fused.get("confidence", 0.0) >= 70.0)
+            text = fused.get("text", "")
+            stable = bool(
+                fused.get("samples", 0) >= 3
+                and fused.get("agreement", 0.0) >= 0.67
+                and fused.get("confidence", 0.0) >= 70.0
+            )
             cache.update({
-                "status": status, "available": True, "error": "", "outputs": outputs,
-                "consensus": fused.get("text", ""), "agreement": fused.get("agreement", 0.0),
-                "confidence": fused.get("confidence", 0.0), "format_score": best.get("format_score", 0.0),
-                "samples": fused.get("samples", 0), "frame_id": frame_id, "box": box,
-                "updated_at": time.monotonic(), "threshold_attempted": threshold_attempted,
-                "duration": round(time.monotonic() - started, 2), "stable": stable,
+                "status": "LIVE" if text else "NO_TEXT",
+                "available": True,
+                "error": "",
+                "outputs": {"enhanced": result},
+                "consensus": text,
+                "agreement": fused.get("agreement", 0.0),
+                "confidence": fused.get("confidence", 0.0),
+                "format_score": result.get("format_score", 0.0),
+                "samples": fused.get("samples", 0),
+                "frame_id": frame_id,
+                "box": box,
+                "updated_at": time.monotonic(),
+                "duration": round(time.monotonic() - started, 2),
+                "stable": stable,
             })
     except FileNotFoundError:
         with _OCR_CACHE_LOCK:
@@ -190,11 +168,10 @@ def _clear_no_plate(cache: dict[str, Any]) -> None:
     cache.update({
         "status": "NO_PLATE", "available": False, "error": "Plate ROI not available",
         "outputs": {}, "consensus": "", "agreement": 0.0, "confidence": 0.0,
-        "format_score": 0.0, "samples": 0, "box": None, "frame": None,
+        "format_score": 0.0, "samples": 0, "box": None,
         "history": [], "ocr_runs": 0, "valid_runs": 0, "stable": False,
-        "duration": None, "threshold_attempted": False,
-        "frozen_frame": None, "frozen_frame_id": None, "frozen_box": None,
-        "freeze_started": 0.0, "freeze_attempts": 0,
+        "duration": None, "frozen_frame": None, "frozen_frame_id": None,
+        "frozen_box": None, "freeze_started": 0.0, "freeze_attempts": 0,
     })
 
 
@@ -207,7 +184,6 @@ def _release_freeze(cache: dict[str, Any]) -> None:
 
 
 def _refresh_ocr(state: Any) -> dict[str, Any]:
-    """Return cached OCR and process a frozen source frame until recognition or timeout."""
     cache = _cache_for(state)
     now = time.monotonic()
     with state._lock:
@@ -220,15 +196,13 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
         if live_box is not None and live_copy is not None:
             current_box = tuple(live_box)
             cache["last_seen"] = now
-            # Acquire exactly one source frame for an OCR transaction.
             if cache["frozen_frame"] is None:
                 cache["frozen_frame"] = live_copy
                 cache["frozen_frame_id"] = live_frame_id
                 cache["frozen_box"] = current_box
                 cache["freeze_started"] = now
                 cache["freeze_attempts"] = 0
-            frozen_age = now - float(cache.get("freeze_started", 0.0))
-            if frozen_age > _OCR_FREEZE_TTL:
+            if now - float(cache.get("freeze_started", 0.0)) > _OCR_FREEZE_TTL:
                 _release_freeze(cache)
                 cache["frozen_frame"] = live_copy
                 cache["frozen_frame_id"] = live_frame_id
@@ -247,13 +221,10 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
             )
             if should_run and frozen_frame is not None:
                 cache["running"] = True
-                cache["last_requested_frame"] = frozen_id
-                cache["requested_box"] = frozen_box
                 cache["last_run"] = now
                 cache["freeze_attempts"] = attempts + 1
                 _start_ocr_worker(state, frozen_frame.copy(), frozen_box, frozen_id)
             if cache["consensus"]:
-                # Recognition achieved: release the frozen source and allow a new plate/frame transaction.
                 _release_freeze(cache)
             elif attempts >= _OCR_FREEZE_RETRIES and not cache["running"]:
                 _release_freeze(cache)
@@ -263,6 +234,7 @@ def _refresh_ocr(state: Any) -> dict[str, Any]:
             _clear_no_plate(cache)
         elif cache["status"] in {"LIVE", "NO_TEXT"}:
             cache["status"] = "STALE"
+
         result = {k: v for k, v in cache.items() if k not in {"frame", "frozen_frame"}}
         result["age"] = round(max(0.0, now - result["updated_at"]), 2) if result["updated_at"] else None
         result["valid_rate"] = round((result["valid_runs"] / result["ocr_runs"]) * 100.0, 1) if result["ocr_runs"] else 0.0
@@ -336,8 +308,10 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
         runtime_orientation = request.args.get("runtime_orientation", "false").lower() == "true"
         state.runtime_orientation = runtime_orientation
         if state.camera_manager is not None:
-            try: state.diagnostics = state.camera_manager.generate_diagnostics(Path(state.diagnostics_dir), runtime_orientation=runtime_orientation)
-            except Exception as exc: return jsonify({"error": str(exc), **state.frame_info()}), 500
+            try:
+                state.diagnostics = state.camera_manager.generate_diagnostics(Path(state.diagnostics_dir), runtime_orientation=runtime_orientation)
+            except Exception as exc:
+                return jsonify({"error": str(exc), **state.frame_info()}), 500
         return jsonify(state.frame_info())
 
     @app.get("/api/pipeline")

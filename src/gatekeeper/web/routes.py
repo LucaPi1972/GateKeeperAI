@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ _OCR_CACHE: dict[int, dict[str, Any]] = {}
 _OCR_CACHE_LOCK = threading.RLock()
 _OCR_TTL = 2.5
 _OCR_INTERVAL = 0.8
-_OCR_FALLBACK_INTERVAL = 5.0
+_OCR_FALLBACK_INTERVAL = 1.5
 _OCR_HISTORY_SIZE = 8
 
 
@@ -86,6 +87,17 @@ def _ocr_one(name: str, image: Any) -> dict[str, Any]:
     return result
 
 
+def _ocr_one_safe(name: str, image: Any) -> dict[str, Any]:
+    """Run a fallback OCR pass without allowing one failed variant to kill the cycle."""
+    try:
+        return _ocr_one(name, image)
+    except subprocess.TimeoutExpired:
+        return {"name": name, "raw": "", "text": "", "corrected": "", "engine_confidence": None, "format_score": 0.0, "score": 0.0, "error": "timeout"}
+    except Exception as exc:
+        logging.getLogger("gatekeeper").debug("OCR fallback %s failed: %s", name, exc)
+        return {"name": name, "raw": "", "text": "", "corrected": "", "engine_confidence": None, "format_score": 0.0, "score": 0.0, "error": str(exc)}
+
+
 def _fuse_history(cache: dict[str, Any]) -> dict[str, Any]:
     from src.plate_ocr import fuse_temporal_results
     return fuse_temporal_results(list(cache.get("history", [])), max_items=_OCR_HISTORY_SIZE)
@@ -99,30 +111,32 @@ def _ocr_worker(state: Any, frame: Any, box: tuple[int, int, int, int], frame_id
         variants = build_roi_variants(frame, box, margin_ratio=0.05)
         outputs: dict[str, dict[str, Any]] = {}
 
-        # Fast path: exactly one OCR invocation for normal field operation.
+        # Fast path: one enhanced OCR pass for normal field operation.
         primary = _ocr_one("enhanced_5", variants["enhanced"])
         outputs["enhanced"] = primary
         best = primary
         threshold_attempted = False
 
-        # Expensive alternatives are diagnostics/fallback only. Never chain all
-        # variants in one request: that was the source of 10-15s field latency.
+        # If the fast result is weak, run the two complementary variants in
+        # parallel. This keeps the fallback latency close to one OCR pass while
+        # giving the temporal fusion two independent preprocessing paths.
         now = time.monotonic()
         fallback_due = now - float(cache.get("last_fallback_run", 0.0)) >= _OCR_FALLBACK_INTERVAL
         if primary["score"] < 0.68 and fallback_due:
-            fallback = _ocr_one("rectified", variants["rectified"])
-            outputs["rectified"] = fallback
-            if fallback["score"] > best["score"]:
-                best = fallback
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gatekeeper-ocr-fallback") as executor:
+                futures = {
+                    executor.submit(_ocr_one_safe, "rectified", variants["rectified"]): "rectified",
+                    executor.submit(_ocr_one_safe, "threshold", variants["threshold"]): "threshold",
+                }
+                for future in as_completed(futures):
+                    name = futures[future]
+                    result = future.result()
+                    outputs[name] = result
+                    if result.get("score", 0.0) > best.get("score", 0.0):
+                        best = result
+            threshold_attempted = "threshold" in outputs
             with _OCR_CACHE_LOCK:
                 cache["last_fallback_run"] = now
-
-        if best["score"] < 0.55 and fallback_due:
-            threshold_attempted = True
-            threshold = _ocr_one("threshold", variants["threshold"])
-            outputs["threshold"] = threshold
-            if threshold["score"] > best["score"]:
-                best = threshold
 
         history_item = {
             "text": best.get("corrected", ""),

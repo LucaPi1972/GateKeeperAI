@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.7
+
+- Reduce normal live OCR to one Tesseract pass per cycle instead of chaining multiple OCR passes.
+- Keep rectified and threshold OCR as rate-limited fallbacks only when the primary result is weak.
+- Reduce the Tesseract hard timeout from 6 seconds to 3 seconds so a bad OCR run cannot hold the gate workflow for too long.
+- Keep OCR asynchronous so the live preview and plate detector remain responsive.
+- Reset OCR history and counters after the plate has been absent beyond the retention timeout, avoiding stale sample counts such as `21/21` while showing `NO PLATE`.
+- Keep detector, temporal plate selection, Reading Zone, camera pipeline, BGR Live Preview, FRAME_MASTER and ROI generation unchanged.
+
 ## 0.8.6
 
 - Add field-test OCR stability metrics without changing detector or ROI behavior.

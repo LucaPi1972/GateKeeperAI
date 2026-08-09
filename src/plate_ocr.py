@@ -77,7 +77,9 @@ def score_ocr_candidate(text: str, *, engine_confidence: float | None = None) ->
     if engine_confidence is None:
         total = fmt
     else:
-        total = 0.65 * engine + 0.35 * fmt
+        # Keep engine confidence useful, but do not let a conservative
+        # Tesseract confidence suppress an otherwise well-formed plate.
+        total = 0.45 * engine + 0.55 * fmt
     return {
         "text": raw,
         "corrected": corrected,
@@ -129,7 +131,10 @@ def fuse_temporal_results(results: Iterable[Dict[str, Any]], *, max_items: int =
     samples = sum(bucket["count"] for bucket in buckets.values())
     agreement = best["count"] / samples if samples else 0.0
     mean_score = best["score"] / best["count"] if best["count"] else 0.0
-    confidence = 100.0 * (0.60 * agreement + 0.40 * mean_score)
+    # Temporal agreement is the strongest signal in a live gate camera:
+    # repeated identical reads should quickly become trustworthy even when
+    # Tesseract's per-frame confidence is conservative.
+    confidence = 100.0 * (0.75 * agreement + 0.25 * mean_score)
     return {
         "text": best_text,
         "confidence": round(confidence, 1),

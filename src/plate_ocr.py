@@ -136,3 +136,13 @@ def fuse_temporal_results(results: Iterable[Dict[str, Any]], *, max_items: int =
         "agreement": round(agreement, 3),
         "samples": int(samples),
     }
+
+
+def temporal_stability(fused: Dict[str, Any], *, min_samples: int = 3, min_agreement: float = 0.67, min_confidence: float = 70.0) -> bool:
+    """Return whether a fused OCR result is sufficiently stable for field testing."""
+    return bool(
+        fused.get("samples", 0) >= min_samples
+        and fused.get("agreement", 0.0) >= min_agreement
+        and fused.get("confidence", 0.0) >= min_confidence
+        and fused.get("text", "")
+    )

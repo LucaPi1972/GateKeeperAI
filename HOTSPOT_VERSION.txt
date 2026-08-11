@@ -1,0 +1,1 @@
+0.8.20 offline hotspot field mode

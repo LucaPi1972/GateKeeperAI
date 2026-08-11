@@ -1,0 +1,16 @@
+GateKeeper AI 0.8.20
+
+Wi-Fi AP: GateKeeperAI (SSID chosen during setup)
+Pi hotspot IP: 192.168.50.1
+Mobile UI: http://192.168.50.1:8080/mobile
+Internet: not required
+GPIO: BCM17
+
+Setup:
+  sudo ./scripts/setup_offline_hotspot.sh
+
+Enable:
+  sudo ./scripts/enable_offline_hotspot.sh
+
+Disable:
+  sudo ./scripts/disable_offline_hotspot.sh

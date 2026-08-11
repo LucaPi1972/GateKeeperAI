@@ -1,0 +1,24 @@
+GATEKEEPER AI 0.8.20 - OFFLINE HOTSPOT QUICK TEST
+
+1) On Raspberry Pi:
+   cd ~/GateKeeperAI
+   sudo ./scripts/setup_offline_hotspot.sh
+
+2) Connect phone to the SSID configured by the script.
+
+3) Open:
+   http://192.168.50.1:8080/mobile
+
+4) Confirm:
+   - live camera is visible
+   - OCR status updates
+   - Plate Lock reaches CONFIRMED
+   - GPIO LED flashes during recognition
+   - GPIO LED stays HIGH for the gate pulse at confirmation
+
+5) Test without Internet:
+   - disable mobile data on the phone
+   - ensure the phone remains connected to the GateKeeper Wi-Fi
+   - reload the mobile page
+
+Expected: the dashboard and OCR continue to work locally.

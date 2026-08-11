@@ -233,6 +233,8 @@ def register_routes(app: Any, state: Any, stream_fps: int) -> None:
     from flask import Response, jsonify, render_template, request, send_from_directory
     @app.get("/")
     def index(): return render_template("index.html")
+    @app.get("/mobile")
+    def mobile(): return render_template("mobile.html")
     @app.get("/diagnostics")
     def diagnostics(): return render_template("diagnostics.html")
     @app.get("/health")

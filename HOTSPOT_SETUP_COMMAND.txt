@@ -1,0 +1,3 @@
+cd ~/GateKeeperAI
+chmod +x scripts/*.sh
+sudo ./scripts/setup_offline_hotspot.sh

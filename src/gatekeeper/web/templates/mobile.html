@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <title>GateKeeper AI Mobile</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0f14;color:#f5f7fa}
+    *{box-sizing:border-box}body{margin:0;background:#0b0f14}.wrap{width:min(100%,560px);margin:auto;padding:10px 10px 24px}.top{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 10px}.title{font-size:19px;font-weight:750}.sub{font-size:11px;color:#8d99a8;margin-top:2px}.pill{font-size:11px;font-weight:700;padding:6px 9px;border-radius:999px;background:#18212c;color:#9daaba}.card{background:#121820;border:1px solid #202a35;border-radius:14px;margin-bottom:10px;overflow:hidden}.stream{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#06080b}.section{padding:12px}.eyebrow{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#8995a4;font-weight:750;margin:0 0 5px}.plate{font-size:31px;line-height:1.05;font-weight:850;letter-spacing:.08em;text-align:center;padding:8px 0}.state{text-align:center;font-size:13px;font-weight:750;padding:7px 9px;border-radius:9px;background:#1b2632}.state.ok{background:#163523;color:#79e2a0}.state.warn{background:#332b16;color:#f1cf68}.state.bad{background:#361b20;color:#ff8e9a}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:#0e141b;border-radius:10px;padding:9px}.label{font-size:10px;color:#7f8a98}.value{font-size:18px;font-weight:750;margin-top:2px}.small{font-size:13px}.roi{display:block;width:100%;border-radius:9px;background:#080b0f;min-height:70px;object-fit:contain}.row{display:flex;justify-content:space-between;gap:10px;align-items:center}.list{display:grid;gap:7px}.line{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid #1d2630}.line:last-child{border-bottom:0}.muted{color:#8c98a6}.footer{text-align:center;color:#697585;font-size:10px;padding:5px}.button{display:block;width:100%;border:0;border-radius:10px;padding:11px;background:#202b38;color:#fff;font-weight:700;font-size:13px}.hidden{display:none}@media(min-width:700px){.wrap{padding-top:18px}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top"><div><div class="title">GateKeeper AI</div><div class="sub">Field Dashboard · mobile</div></div><div id="connection" class="pill">CONNECTING</div></header>
+
+  <section class="card"><img id="stream" class="stream" src="/stream" alt="Live camera"><div class="section"><div id="state" class="state">NO PLATE</div><div id="plate" class="plate">—</div><div class="grid"><div class="metric"><div class="label">CONFIDENCE</div><div id="confidence" class="value">—</div></div><div class="metric"><div class="label">FORMAT</div><div id="format" class="value">—</div></div><div class="metric"><div class="label">AGREEMENT</div><div id="agreement" class="value">—</div></div><div class="metric"><div class="label">OCR TIME</div><div id="duration" class="value">—</div></div></div></div></section>
+
+  <section class="card"><div class="section"><div class="row"><div><p class="eyebrow">Plate lock</p><div id="lock" class="small">—</div></div><div style="text-align:right"><p class="eyebrow">Angle</p><div id="angle" class="small">—</div></div></div><div class="grid" style="margin-top:9px"><div class="metric"><div class="label">SAMPLES</div><div id="samples" class="value">—</div></div><div class="metric"><div class="label">VALID RUNS</div><div id="valid" class="value">—</div></div></div></div></section>
+
+  <section class="card"><div class="section"><p class="eyebrow">Enhanced ROI · OCR source</p><img id="roi" class="roi" src="/plate_roi/enhanced.jpg" alt="Enhanced plate ROI"><div id="roiText" class="muted small" style="text-align:center;margin-top:7px">Waiting for plate...</div></div></section>
+
+  <section class="card"><div class="section"><p class="eyebrow">System</p><div class="list"><div class="line"><span class="muted">Camera</span><strong id="camera">—</strong></div><div class="line"><span class="muted">Resolution</span><strong id="resolution">—</strong></div><div class="line"><span class="muted">FPS</span><strong id="fps">—</strong></div><div class="line"><span class="muted">Candidates</span><strong id="candidates">—</strong></div><div class="line"><span class="muted">Selected</span><strong id="selected">—</strong></div><div class="line"><span class="muted">Detector confidence</span><strong id="detector">—</strong></div></div></div></section>
+
+  <section class="card"><div class="section"><p class="eyebrow">Field test</p><div class="line"><span class="muted">GPIO / gate simulation</span><strong id="gpio">NOT CONNECTED</strong></div><p class="muted" style="font-size:10px;margin:8px 0 0">Il comando GPIO verrà mostrato qui quando sarà attivato nella prossima milestone.</p></div></section>
+
+  <div class="footer">Offline local dashboard · aggiornamento automatico</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function pct(v){return v==null?'—':`${Number(v).toFixed(0)}%`}
+function setState(s){const e=$('state');e.textContent=s.replaceAll('_',' ');e.className='state '+(s==='CONFIRMED'?'ok':(['STABILIZING','LOCKED','OCR_RUNNING'].includes(s)?'warn':(['ERROR','UNAVAILABLE','ANGLE_REJECTED'].includes(s)?'bad':'')))}
+async function refresh(){
+ try{
+  const [o,f]=await Promise.all([fetch('/api/plate_ocr',{cache:'no-store'}),fetch('/api/frame_info',{cache:'no-store'})]);
+  const p=await o.json(), s=await f.json(); $('connection').textContent='ONLINE';
+  const status=p.status||'NO_PLATE'; setState(status); $('plate').textContent=p.consensus||p.outputs?.enhanced?.corrected||'—'; $('confidence').textContent=p.confidence==null?'—':pct(p.confidence); $('format').textContent=p.format_score==null?'—':pct(Number(p.format_score)*100); $('agreement').textContent=p.agreement==null?'—':pct(Number(p.agreement)*100); $('duration').textContent=p.duration==null?'—':`${Number(p.duration).toFixed(1)}s`; $('samples').textContent=p.samples??'—'; $('valid').textContent=p.ocr_runs?`${p.valid_runs}/${p.ocr_runs}`:'—'; $('angle').textContent=p.plate_angle==null?'—':`${Number(p.plate_angle).toFixed(1)}°`; $('lock').textContent=p.plate_locked?'LOCKED':'not locked'; $('roiText').textContent=status==='NO_PLATE'?'Waiting for plate...':(p.consensus?`OCR: ${p.consensus}`:`OCR status: ${status}`);
+  const stamp=Date.now(); if(p.box) $('roi').src=`/plate_roi/enhanced.jpg?t=${stamp}`;
+  $('camera').textContent=s.plate_found?'PLATE DETECTED':'SEARCHING'; $('resolution').textContent=`${s.width??'?'}×${s.height??'?'}`; $('fps').textContent=s.fps??'—'; $('candidates').textContent=s.candidate_count??'—'; $('selected').textContent=s.selected_candidate??'—'; $('detector').textContent=s.confidence==null?'—':Number(s.confidence).toFixed(3);
+ }catch(e){$('connection').textContent='OFFLINE';setState('OFFLINE')}
+}
+refresh();setInterval(refresh,800);
+</script>
+</body>
+</html>

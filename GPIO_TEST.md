@@ -1,0 +1,1 @@
+Use the field-test LED on BCM GPIO17 (physical pin 11) through 330 ohm to the LED long leg; LED short leg to GND (physical pin 9). The GPIO pulse is intended only as a simulation of the future gate command.

@@ -1336,6 +1336,44 @@ def test_live_preview_color_pipeline_unchanged_by_calibration():
     assert plain.latest_frame_jpeg() == calibrated.latest_frame_jpeg()
 
 
+
+def test_live_preview_downscales_large_frame_without_changing_master(monkeypatch):
+    np = pytest.importorskip("numpy")
+    frame_master = np.zeros((1232, 1640, 3), dtype=np.uint8)
+    encoded_inputs = []
+
+    def fake_encode(frame, *, color_order="RGB"):
+        encoded_inputs.append(frame.copy())
+        return b"jpeg"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
+    state = main.LivePreviewState(version="0.8.19", git_commit="abc123")
+
+    state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="1640x1232")
+
+    assert state.latest_frame_jpeg() == b"jpeg"
+    assert encoded_inputs[0].shape == (616, 820, 3)
+    assert state.width == 1640
+    assert state.height == 1232
+    assert state.pipeline_snapshot()["master_frame_id"] == id(frame_master)
+
+
+def test_live_preview_does_not_upscale_small_frame(monkeypatch):
+    np = pytest.importorskip("numpy")
+    frame_master = np.zeros((120, 160, 3), dtype=np.uint8)
+    encoded_inputs = []
+
+    def fake_encode(frame, *, color_order="RGB"):
+        encoded_inputs.append(frame.copy())
+        return b"jpeg"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
+    state = main.LivePreviewState(version="0.8.19", git_commit="abc123")
+
+    state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="160x120")
+
+    assert encoded_inputs[0].shape == (120, 160, 3)
+
 def test_motion_detection_unchanged_thresholds_and_state():
     detector = main.MotionDetector(min_area=123, threshold=45)
 

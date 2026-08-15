@@ -48,6 +48,8 @@ PREVIEW_SWAP_RB_VALUES = {"true", "false"}
 LIVE_PREVIEW_PIPELINE = "bgr"
 LIVE_PREVIEW_CONFIGURATION = "inherited from 0.6.9"
 JPEG_ENCODER_INPUT_FORMAT = "BGR"
+LIVE_PREVIEW_MAX_WIDTH = 820
+LIVE_PREVIEW_MAX_HEIGHT = 616
 
 
 @dataclass(frozen=True)
@@ -600,9 +602,24 @@ class LivePreviewState:
     def resolved_preview_swap_rb(self) -> bool:
         return str(self.preview_swap_rb or "true").lower() == "true"
 
+    def _resize_preview_frame(self, frame: Any) -> Any:
+        """Downscale only the HTTP Live Preview frame before JPEG encoding."""
+        if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 2:
+            return frame
+        height, width = frame.shape[:2]
+        scale = min(LIVE_PREVIEW_MAX_WIDTH / max(width, 1), LIVE_PREVIEW_MAX_HEIGHT / max(height, 1), 1.0)
+        if scale >= 1.0:
+            return frame
+        import cv2
+
+        target_width = max(1, int(round(width * scale)))
+        target_height = max(1, int(round(height * scale)))
+        return cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
     def encode_preview_jpeg(self, frame: Any) -> bytes | None:
         """Encode HTTP Live Preview with the Release 0.6.9 preview-only swap behavior."""
-        preview_frame = CameraManager.apply_pipeline(frame, "swap_rb") if self.resolved_preview_swap_rb() else frame
+        preview_frame = self._resize_preview_frame(frame)
+        preview_frame = CameraManager.apply_pipeline(preview_frame, "swap_rb") if self.resolved_preview_swap_rb() else preview_frame
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
         return encoder(preview_frame)
 

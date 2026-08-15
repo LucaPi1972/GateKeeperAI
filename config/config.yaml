@@ -21,7 +21,7 @@ camera:
     AnalogueGain: 1.0
 
 display:
-  enabled: true
+  enabled: false
   fullscreen: false
   window_name: GateKeeper AI
   show_fps: true
@@ -47,7 +47,7 @@ display:
     height: 70
 
 plate_detector:
-  debug: true
+  debug: false
   confidence_threshold: 0.70
   aspect_ratio_min: 3.5
   aspect_ratio_max: 6.5
@@ -68,9 +68,9 @@ preview:
   pipeline: bgr
 
 debug:
-  enabled: true
-  live_preview: true
-  save_annotated_frames: true
+  enabled: false
+  live_preview: false
+  save_annotated_frames: false
 
 logging:
   level: INFO

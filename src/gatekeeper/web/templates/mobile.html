@@ -39,7 +39,7 @@ async function refresh(){
   $('camera').textContent=s.plate_found?'PLATE DETECTED':'SEARCHING'; $('resolution').textContent=`${s.width??'?'}×${s.height??'?'}`; $('fps').textContent=s.fps??'—'; $('candidates').textContent=s.candidate_count??'—'; $('selected').textContent=s.selected_candidate??'—'; $('detector').textContent=s.confidence==null?'—':Number(s.confidence).toFixed(3);
  }catch(e){$('connection').textContent='OFFLINE';setState('OFFLINE')}
 }
-refresh();setInterval(refresh,800);
+refresh();setInterval(refresh,1200);
 </script>
 </body>
 </html>

@@ -266,10 +266,25 @@ class PlateDetector:
         import sys
         camera_manager = getattr(sys.modules.get("main") or sys.modules.get("__main__"), "CameraManager")
         gray = camera_manager.to_gray(frame)
-        filtered = cv2.bilateralFilter(gray, 11, 17, 17)
+
+        # Performance optimization:
+        # perform contour detection at half resolution, then restore
+        # candidate coordinates to the original camera resolution.
+        detection_scale = 0.5
+        detection_gray = cv2.resize(
+            gray, None, fx=detection_scale, fy=detection_scale,
+            interpolation=cv2.INTER_AREA
+        )
+        filtered = cv2.GaussianBlur(detection_gray, (5, 5), 0)
         edged = cv2.Canny(filtered, 30, 200)
-        contours, _ = cv2.findContours(edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        self.last_debug_frames = {"gray": gray, "edges": edged}
+        contours, _ = cv2.findContours(
+            edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        self.last_debug_frames = {
+            "gray": detection_gray,
+            "edges": edged,
+        }
 
         candidates: list[PlateCandidate] = []
         frame_h, frame_w = frame.shape[:2]
@@ -277,8 +292,15 @@ class PlateDetector:
         for contour in contours:
             perimeter = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+
             if len(approx) < 4:
                 continue
+
+            # Restore contour coordinates to the original camera resolution.
+            # Detection is performed at 50%, therefore coordinates and
+            # dimensions must be multiplied by 2 before geometry scoring.
+            approx = (approx.astype("float32") / detection_scale).astype("int32")
+
             x, y, width, height = cv2.boundingRect(approx)
             if width <= 0 or height <= 0:
                 candidates.append(PlateCandidate((x, y, max(width, 0), max(height, 0)), 0.0, approx, 0.0, 0.0, 0.0, 0.0, False, "invalid_geometry"))

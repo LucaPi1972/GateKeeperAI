@@ -674,6 +674,92 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
         is not None
     )
 
+class FakeCrop:
+    shape = (5, 10, 3)
+    dtype = "uint8"
+    strides = (30, 3, 1)
+
+
+class FakeFrame:
+    shape = (20, 30, 3)
+
+
+class CountingJpegCameraManager:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    def encode_jpeg(self, frame):
+        self.calls.append(frame)
+        return f"jpeg-{len(self.calls)}".encode()
+
+    def frame_checksum(self, frame):
+        return "checksum"
+
+
+def test_live_preview_plate_crop_jpeg_cache_reuses_same_crop():
+    frame = FakeFrame()
+    crop = FakeCrop()
+    camera_manager = CountingJpegCameraManager()
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.camera_manager = camera_manager
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    first_plate_jpeg = state.latest_plate_jpeg()
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+
+    assert state.latest_plate_jpeg() == first_plate_jpeg
+    assert sum(call is crop for call in camera_manager.calls) == 1
+
+
+def test_live_preview_plate_crop_jpeg_cache_encodes_new_crop():
+    frame = FakeFrame()
+    first_crop = FakeCrop()
+    second_crop = FakeCrop()
+    camera_manager = CountingJpegCameraManager()
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.camera_manager = camera_manager
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=first_crop)
+    first_plate_jpeg = state.latest_plate_jpeg()
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=second_crop)
+
+    assert state.latest_plate_jpeg() != first_plate_jpeg
+    assert sum(call is first_crop for call in camera_manager.calls) == 1
+    assert sum(call is second_crop for call in camera_manager.calls) == 1
+
+
+def test_live_preview_plate_crop_none_invalidates_jpeg_cache():
+    frame = FakeFrame()
+    crop = FakeCrop()
+    camera_manager = CountingJpegCameraManager()
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.camera_manager = camera_manager
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    assert state.latest_plate_jpeg() is not None
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=None)
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+
+    assert state.latest_plate_jpeg() is not None
+    assert sum(call is crop for call in camera_manager.calls) == 2
+
+
+def test_live_preview_plate_crop_cached_jpeg_matches_existing_encoder_output():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((20, 30, 3), dtype=np.uint8)
+    crop = np.full((5, 10, 3), 128, dtype=np.uint8)
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    cached_jpeg = state.latest_plate_jpeg()
+
+    assert cached_jpeg == main.CameraManager.encode_jpeg(crop)
+    assert cv2.imdecode(np.frombuffer(cached_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR) is not None
+
 
 def test_live_preview_server_routes_use_shared_state(monkeypatch):
     pytest.importorskip("flask")

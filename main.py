@@ -284,6 +284,7 @@ class LivePreviewState:
         self._consumer_frames: dict[str, FrameMaster] = {}
         self._last_master_log = 0.0
         self._plate_jpeg: bytes | None = None
+        self._plate_jpeg_cache_key: tuple[int, tuple[int, ...] | None, str | None, tuple[int, ...] | None] | None = None
         self.motion_state = (
             MotionEventManager.IDLE if "MotionEventManager" in globals() else "IDLE"
         )
@@ -330,7 +331,14 @@ class LivePreviewState:
         now = datetime.now(timezone.utc).isoformat()
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
         encoded_frame = None
-        encoded_plate = encoder(plate_crop) if plate_crop is not None else None
+        plate_cache_key = self._plate_crop_cache_key(plate_crop)
+        encoded_plate = None
+        reuse_plate_jpeg = False
+        if plate_crop is not None:
+            with self._lock:
+                reuse_plate_jpeg = plate_cache_key == self._plate_jpeg_cache_key
+            if not reuse_plate_jpeg:
+                encoded_plate = encoder(plate_crop)
         master = FrameMaster.from_frame(frame, pipeline=self.camera_pipeline, rotation=int(self.camera_orientation.get("rotation", 0) or 0), flip_horizontal=bool(self.camera_orientation.get("flip_horizontal", False)), flip_vertical=bool(self.camera_orientation.get("flip_vertical", False)))
         consumers = {name: master for name in ("preview", "snapshot", "motion", "plate")}
         height = int(frame.shape[0]) if hasattr(frame, "shape") else None
@@ -342,8 +350,12 @@ class LivePreviewState:
             self._consumer_frames = consumers
             self.width = width
             self.height = height
-            if encoded_plate is not None:
+            if plate_crop is None:
+                self._plate_jpeg = None
+                self._plate_jpeg_cache_key = None
+            elif not reuse_plate_jpeg:
                 self._plate_jpeg = encoded_plate
+                self._plate_jpeg_cache_key = plate_cache_key
             self.motion_state = motion_state
             self.fps = fps
             self.resolution = resolution
@@ -380,6 +392,16 @@ class LivePreviewState:
                     snapshot.get("flip"),
                 )
                 self._last_master_log = now_monotonic
+
+    @staticmethod
+    def _plate_crop_cache_key(plate_crop: Any | None) -> tuple[int, tuple[int, ...] | None, str | None, tuple[int, ...] | None] | None:
+        """Return a lightweight identity/metadata key for the current plate crop."""
+        if plate_crop is None:
+            return None
+        shape = tuple(plate_crop.shape) if hasattr(plate_crop, "shape") else None
+        dtype = str(plate_crop.dtype) if hasattr(plate_crop, "dtype") else None
+        strides = tuple(plate_crop.strides) if hasattr(plate_crop, "strides") else None
+        return id(plate_crop), shape, dtype, strides
 
     def record_motion_event(self, event: dict[str, Any]) -> None:
         """Store a motion event summary for the dashboard and API."""

@@ -11,6 +11,13 @@ import pytest
 import main
 
 
+class FakeFrame:
+    def __init__(self, shape=(20, 30, 3), dtype="uint8", strides=(90, 3, 1)) -> None:
+        self.shape = shape
+        self.dtype = dtype
+        self.strides = strides
+
+
 class FakeCamera:
     def __init__(
         self, payload: bytes = b"jpeg-bytes", frames: list[object] | None = None
@@ -674,6 +681,94 @@ def test_live_preview_state_serves_shared_frame_and_metadata():
         is not None
     )
 
+
+
+
+def test_live_preview_state_reuses_plate_jpeg_for_same_crop(monkeypatch):
+    frame = FakeFrame()
+    crop = FakeFrame(shape=(5, 10, 3), strides=(30, 3, 1))
+    plate_encodes = 0
+
+    def fake_encode_jpeg(image):
+        nonlocal plate_encodes
+        if image is crop:
+            plate_encodes += 1
+            return f"plate-{plate_encodes}".encode()
+        return b"frame"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode_jpeg))
+    state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    first_plate_jpeg = state.latest_plate_jpeg()
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+
+    assert plate_encodes == 1
+    assert state.latest_plate_jpeg() == first_plate_jpeg
+
+
+def test_live_preview_state_encodes_new_plate_crop(monkeypatch):
+    frame = FakeFrame()
+    first_crop = FakeFrame(shape=(5, 10, 3), strides=(30, 3, 1))
+    second_crop = FakeFrame(shape=(5, 10, 3), strides=(30, 3, 1))
+    encoded_crops = []
+
+    def fake_encode_jpeg(image):
+        if image is first_crop or image is second_crop:
+            encoded_crops.append(image)
+            return f"plate-{len(encoded_crops)}".encode()
+        return b"frame"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode_jpeg))
+    state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=first_crop)
+    first_plate_jpeg = state.latest_plate_jpeg()
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=second_crop)
+
+    assert encoded_crops == [first_crop, second_crop]
+    assert state.latest_plate_jpeg() != first_plate_jpeg
+
+
+def test_live_preview_state_plate_crop_none_invalidates_cache(monkeypatch):
+    frame = FakeFrame()
+    crop = FakeFrame(shape=(5, 10, 3), strides=(30, 3, 1))
+    plate_encodes = 0
+
+    def fake_encode_jpeg(image):
+        nonlocal plate_encodes
+        if image is crop:
+            plate_encodes += 1
+            return f"plate-{plate_encodes}".encode()
+        return b"frame"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode_jpeg))
+    state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
+    state.preview_swap_rb = "false"
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=None)
+    assert state.latest_plate_jpeg() is None
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+    assert plate_encodes == 2
+    assert state.latest_plate_jpeg() == b"plate-2"
+
+
+def test_live_preview_state_plate_jpeg_output_matches_existing_encoder():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((20, 30, 3), dtype=np.uint8)
+    crop = np.zeros((5, 10, 3), dtype=np.uint8)
+    crop[:, :, 1] = 127
+    state = main.LivePreviewState(version="0.6.9", git_commit="abc123")
+
+    state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
+
+    assert state.latest_plate_jpeg() == main.CameraManager.encode_jpeg(crop)
+    assert cv2.imdecode(np.frombuffer(state.latest_plate_jpeg(), dtype=np.uint8), cv2.IMREAD_COLOR) is not None
 
 def test_live_preview_server_routes_use_shared_state(monkeypatch):
     pytest.importorskip("flask")

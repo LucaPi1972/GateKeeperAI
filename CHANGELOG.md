@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.21
+
+- Cache the JPEG encoding of the detected plate crop when the same crop object and metadata are reused across consecutive frames, avoiding redundant JPEG encoding.
+- Invalidate the plate JPEG cache when the plate crop changes or becomes unavailable.
+- Optimize Live Preview JPEG color conversion by passing the correct color order to the JPEG encoder and avoiding redundant RGB/BGR conversion.
+- Preserve the existing Live Preview resizing, FRAME_MASTER, plate detection, and public JPEG outputs.
+- Add automated tests covering plate JPEG cache reuse, cache invalidation, new crop encoding, and Live Preview JPEG color handling.
+
 ## 0.8.7
 
 - Reduce normal live OCR to one Tesseract pass per cycle instead of chaining multiple OCR passes.

@@ -640,10 +640,15 @@ class LivePreviewState:
 
     def encode_preview_jpeg(self, frame: Any) -> bytes | None:
         """Encode HTTP Live Preview with the Release 0.6.9 preview-only swap behavior."""
+        preview_swapped = self.resolved_preview_swap_rb()
         preview_frame = self._resize_preview_frame(frame)
-        preview_frame = CameraManager.apply_pipeline(preview_frame, "swap_rb") if self.resolved_preview_swap_rb() else preview_frame
+        preview_frame = (
+            CameraManager.apply_pipeline(preview_frame, "swap_rb")
+            if preview_swapped
+            else preview_frame
+        )
         encoder = self.camera_manager.encode_jpeg if self.camera_manager is not None else CameraManager.encode_jpeg
-        return encoder(preview_frame)
+        return encoder(preview_frame, color_order="BGR" if preview_swapped else "RGB")
 
     def latest_frame_jpeg(self) -> bytes | None:
         with self._lock:

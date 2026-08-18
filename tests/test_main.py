@@ -688,8 +688,8 @@ class CountingJpegCameraManager:
     def __init__(self) -> None:
         self.calls: list[object] = []
 
-    def encode_jpeg(self, frame):
-        self.calls.append(frame)
+    def encode_jpeg(self, frame, *, color_order="RGB"):
+        self.calls.append((frame, color_order))
         return f"jpeg-{len(self.calls)}".encode()
 
     def frame_checksum(self, frame):
@@ -709,7 +709,7 @@ def test_live_preview_plate_crop_jpeg_cache_reuses_same_crop():
     state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
 
     assert state.latest_plate_jpeg() == first_plate_jpeg
-    assert sum(call is crop for call in camera_manager.calls) == 1
+    assert sum(call[0] is crop for call in camera_manager.calls) == 1
 
 
 def test_live_preview_plate_crop_jpeg_cache_encodes_new_crop():
@@ -726,8 +726,8 @@ def test_live_preview_plate_crop_jpeg_cache_encodes_new_crop():
     state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=second_crop)
 
     assert state.latest_plate_jpeg() != first_plate_jpeg
-    assert sum(call is first_crop for call in camera_manager.calls) == 1
-    assert sum(call is second_crop for call in camera_manager.calls) == 1
+    assert sum(call[0] is first_crop for call in camera_manager.calls) == 1
+    assert sum(call[0] is second_crop for call in camera_manager.calls) == 1
 
 
 def test_live_preview_plate_crop_none_invalidates_jpeg_cache():
@@ -744,7 +744,7 @@ def test_live_preview_plate_crop_none_invalidates_jpeg_cache():
     state.update_frame(frame, motion_state=main.MotionEventManager.IDLE, fps=1.0, resolution="30x20", plate_crop=crop)
 
     assert state.latest_plate_jpeg() is not None
-    assert sum(call is crop for call in camera_manager.calls) == 2
+    assert sum(call[0] is crop for call in camera_manager.calls) == 2
 
 
 def test_live_preview_plate_crop_cached_jpeg_matches_existing_encoder_output():
@@ -935,6 +935,72 @@ def test_encode_jpeg_bgr_does_not_double_convert_blue():
     assert decoded[..., 0].mean() > 200
     assert decoded[..., 2].mean() < 50
 
+
+
+def test_live_preview_passes_bgr_order_after_preview_swap(monkeypatch):
+    np = pytest.importorskip("numpy")
+    frame_master = np.array([[[11, 22, 33]]], dtype=np.uint8)
+    encoded_inputs = []
+
+    def fake_encode(frame, *, color_order="RGB"):
+        encoded_inputs.append((frame.copy(), color_order))
+        return b"jpeg"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.preview_swap_rb = "true"
+
+    assert state.encode_preview_jpeg(frame_master) == b"jpeg"
+
+    assert encoded_inputs[0][0].tolist() == [[[33, 22, 11]]]
+    assert encoded_inputs[0][1] == "BGR"
+
+
+def test_live_preview_without_preview_swap_keeps_rgb_order(monkeypatch):
+    np = pytest.importorskip("numpy")
+    frame_master = np.array([[[11, 22, 33]]], dtype=np.uint8)
+    encoded_inputs = []
+
+    def fake_encode(frame, *, color_order="RGB"):
+        encoded_inputs.append((frame.copy(), color_order))
+        return b"jpeg"
+
+    monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.preview_swap_rb = "false"
+
+    assert state.encode_preview_jpeg(frame_master) == b"jpeg"
+
+    assert encoded_inputs[0][0].tolist() == [[[11, 22, 33]]]
+    assert encoded_inputs[0][1] == "RGB"
+
+
+def test_live_preview_jpeg_preserves_swapped_color_meaning():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame_master = np.zeros((32, 32, 3), dtype=np.uint8)
+    frame_master[:, :] = (255, 0, 0)
+    state = main.LivePreviewState(version="0.7.1", git_commit="abc123")
+    state.preview_swap_rb = "true"
+
+    jpeg = state.encode_preview_jpeg(frame_master)
+    decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert decoded[..., 0].mean() < 50
+    assert decoded[..., 2].mean() > 200
+
+
+def test_camera_manager_encode_jpeg_default_still_treats_three_channel_as_rgb():
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+    frame[:, :] = (255, 0, 0)
+
+    jpeg = main.CameraManager.encode_jpeg(frame)
+    decoded = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert decoded[..., 2].mean() > 200
+    assert decoded[..., 0].mean() < 50
 
 def test_plate_detector_filters_rejected_and_selects_candidate():
     cv2 = pytest.importorskip("cv2")
@@ -1234,7 +1300,7 @@ def test_live_preview_uses_0_6_9_swap_rb_configuration(monkeypatch):
     encoded_inputs = []
 
     def fake_encode(frame, *, color_order="RGB"):
-        encoded_inputs.append(frame.copy())
+        encoded_inputs.append((frame.copy(), color_order))
         return b"jpeg"
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
@@ -1244,7 +1310,8 @@ def test_live_preview_uses_0_6_9_swap_rb_configuration(monkeypatch):
     state.update_frame(frame_master, motion_state=main.MotionEventManager.IDLE, fps=1, resolution="2x1")
 
     assert state.latest_frame_jpeg() == b"jpeg"
-    assert encoded_inputs[0].tolist() == [[[30, 20, 10], [60, 50, 40]]]
+    assert encoded_inputs[0][0].tolist() == [[[30, 20, 10], [60, 50, 40]]]
+    assert encoded_inputs[0][1] == "BGR"
     assert np.array_equal(frame_master, np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8))
 
 
@@ -1255,7 +1322,7 @@ def test_live_preview_reproduces_0_6_9_preview_encoding(monkeypatch):
     encoded_inputs = []
 
     def fake_encode(frame, *, color_order="RGB"):
-        encoded_inputs.append(frame.copy())
+        encoded_inputs.append((frame.copy(), color_order))
         return b"jpeg"
 
     monkeypatch.setattr(main.CameraManager, "encode_jpeg", staticmethod(fake_encode))
@@ -1266,7 +1333,8 @@ def test_live_preview_reproduces_0_6_9_preview_encoding(monkeypatch):
     pipeline = state.pipeline_snapshot()
 
     assert state.latest_frame_jpeg() == b"jpeg"
-    assert encoded_inputs[0].tolist() == [[[30, 20, 10], [60, 50, 40]]]
+    assert encoded_inputs[0][0].tolist() == [[[30, 20, 10], [60, 50, 40]]]
+    assert encoded_inputs[0][1] == "BGR"
     assert np.array_equal(frame_master, original)
     assert pipeline["master_frame_id"] == id(frame_master)
     assert pipeline["preview_frame_id"] == id(frame_master)
